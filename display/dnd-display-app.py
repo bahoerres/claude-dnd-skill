@@ -2012,13 +2012,8 @@ def stream():
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
-            "Transfer-Encoding": "chunked",
         },
     )
-    # Force a single authoritative Connection header — Werkzeug otherwise
-    # emits both keep-alive (ours) and close (its default), which confuses
-    # transparent proxies (e.g. eero mesh routing) into buffering the stream.
-    resp.headers["Connection"] = "keep-alive"
     return resp
 
 

@@ -1082,6 +1082,27 @@ PR1 (Tasks 1–3) shipped on branch `feat/multiplayer-channel-layer`, then went 
 
 ---
 
+## PR2 review outcomes (2026-06-05)
+
+PR2 (Tasks 4–5, "leak closure") shipped, then went through the same 5-dimension adversarial review (11 findings). One dimension was tasked specifically to attack the in-flight scope decision — and it was right.
+
+**Course-correction (the review overturned a judgment call):** PR2 initially *deferred* stats scoping (along with staged/pending/queue), arguing it was player-shared data needing per-audience live sends. The scope-judgment reviewer showed this was wrong for **stats specifically**: the character *sheet* (inventory, spell slots, secret items, conditions) is secret player-vs-player data, not shared table data; stats scoping was already planned + test-specified for PR2 (Task 5); and catch-up-only scoping strictly reduces exposure. Stats scoping was pulled back into PR2, done consistently:
+- `_scope_stats(stats, ident)` + `_PUBLIC_STAT_FIELDS = (name, race, class, level, hp)` — DM/owner full, others summarised.
+- Scoped in the catch-up **and** all 3 live sends via `_broadcast_stats` (falls back to plain broadcast when no DM — backward-compat).
+
+**Other fixes in PR2:**
+- `_entry_visible` reserved-`"dm"` token guard (parity with `_visible_to`) — a player named `dm` could otherwise read DM replay.
+- `audience_tag` non-string/whitespace → `"public"` (no garbage channel tags).
+- A live-stats infinite-recursion bug (introduced mid-fix by a `replace_all`) was caught by `test_inactive_live_stats_full_to_all`.
+
+**Deferral upheld by the review (correct):** staged/pending/queue scoping — table-coordination signals (whose turn, who's ready) with no clean per-row owner, entangled with the deferred combat-UX open item. Pinned by `test_deferred_surfaces_pass_through_full` so it can't break silently.
+
+**New carry-over to PR3:**
+- **Device approve/deny write-path authz.** PR2 hides the request card from players, but `/device/approve` and `/device/deny` gate only on the shared LAN token (not DM-distinguishing), so any browser can forge an approval (confused deputy). `TODO(PR3)` left at both endpoints. Fix in PR3 alongside `/dnd dm`: resolve identity from the `X-DND-Device` header and require `role == "dm"` when a DM is assigned.
+- Live `/chunk` audience routing (Task 6) makes the replay channel tag consistent with live delivery — already PR3.
+
+---
+
 ## Execution handoff
 
 **Plan complete and saved to `docs/superpowers/plans/2026-06-05-multiplayer-channel-layer.md`.**

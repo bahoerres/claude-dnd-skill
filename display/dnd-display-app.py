@@ -348,7 +348,9 @@ def _resolve_identity(req) -> dict:
     then the sole authenticating ingress. An unguarded header would let any
     direct LAN client claim DM.
     """
-    device_id = req.args.get("device") or ""
+    # Device id: EventSource passes it as ?device= (no custom headers on SSE);
+    # POST routes send it as the X-DND-Device header. Query wins when both set.
+    device_id = req.args.get("device") or req.headers.get("X-DND-Device") or ""
     remote = req.remote_addr or ""
     user = None
     if _FORWARD_AUTH and remote in _TRUSTED_PROXIES:
@@ -1940,10 +1942,10 @@ def device_approve():
     """DM approves a pending device. Body: {"id": "<device_id>"}"""
     if not _token_ok():
         return "Forbidden", 403
-    # TODO(PR3): write-path authz. PR2 hides the request card from players, but
-    # the shared LAN token still lets any browser POST an approval (confused
-    # deputy). When a DM is assigned, require role==dm here — resolve identity
-    # from the X-DND-Device header. Natural home is the /dnd dm role work.
+    # Write-path authz: the shared LAN token is not DM-distinguishing, so when a
+    # DM is assigned only the DM may approve devices (identity from X-DND-Device).
+    if _mp_active() and _resolve_identity(request)["role"] != "dm":
+        return "Forbidden", 403
     device_id = str((request.get_json(force=True, silent=True) or {}).get("id", ""))
     with _devices_lock:
         _pending_devices.pop(device_id, None)
@@ -1959,8 +1961,8 @@ def device_deny():
     """DM denies a pending device. Body: {"id": "<device_id>"}"""
     if not _token_ok():
         return "Forbidden", 403
-    # TODO(PR3): write-path authz — see /device/approve. Require role==dm when a
-    # DM is assigned; the shared token alone is not DM-distinguishing.
+    if _mp_active() and _resolve_identity(request)["role"] != "dm":
+        return "Forbidden", 403
     device_id = str((request.get_json(force=True, silent=True) or {}).get("id", ""))
     with _devices_lock:
         _pending_devices.pop(device_id, None)

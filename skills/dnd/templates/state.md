@@ -147,5 +147,9 @@ revision_log: []
 
 ## Session Flags
 *(tutor_mode, autorun, autorun_interval, tts_voice, sfx_languages — session-scoped flags set via /dnd commands or by the display companion)*
+<!-- dm: <user>   — uncomment + set to hand creative authority to a human DM.
+     Turns ON the display's private channels (per-character views, DM GM-screen,
+     DM-only device approvals). Absent = Claude is DM, single shared screen.
+     Manage via /dm:dnd dm assign|clear|status. -->
 
 ## DM Notes (hidden from players)

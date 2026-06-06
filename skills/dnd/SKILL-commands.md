@@ -635,6 +635,34 @@ List all characters in global roster (`~/.claude/dnd/characters/`). Display: nam
 
 ---
 
+## `/dm:dnd dm <assign <user> | clear | status>` — assign the human DM (private channels)
+Controls whether a human is the Dungeon Master this session. With **no DM assigned, Claude is DM and the display is a single shared screen** — every connected browser sees everything (couch co-op). The moment a DM is assigned, the display companion switches on **server-side private channels**: per-character stat views, a private DM "GM-screen" feed, and DM-only device approvals.
+
+Maps to: `python3 ${CLAUDE_SKILL_DIR}/scripts/mp_admin.py --campaign <current> <subcommand>`.
+
+- `/dm:dnd dm assign <user>` → `dm-assign <user>` — write `dm: <user>` into `state.md → ## Session Flags`. `<user>` should own at least one character (see `/dm:dnd own`). Private filtering is now active.
+- `/dm:dnd dm clear` → `dm-clear` — remove the assignment; Claude resumes as DM and filtering turns off.
+- `/dm:dnd dm status` → `dm-status` — report who is DM this session (or "none").
+
+The DM's browser must resolve to `<user>` (its device mapped via `/dm:dnd own device`, or a forward-auth header) — or be on localhost — to receive the GM-screen channel. Whisper to it from the CLI with `python3 ${CLAUDE_SKILL_DIR}/display/send.py --audience dm "<gm note>"`.
+
+> **Note:** assigning a human DM is intended to also shift Claude from autonomous DM to assistant/combat-coordinator. That prompt regime is a separate, in-progress piece — today, assigning a DM gives you the private-channel plumbing (whispers, scoped stats, GM screen, DM-only approvals) but Claude does not yet auto-demote.
+
+---
+
+## `/dm:dnd own <device <id> <user> | char <user> <Character> | list>` — ownership map
+Builds the per-campaign ownership map (`ownership.json`) the display companion uses to route private channels: which browser (device) belongs to which user, and which characters each user controls.
+
+Maps to: `python3 ${CLAUDE_SKILL_DIR}/scripts/mp_admin.py --campaign <current> <subcommand>`.
+
+- `/dm:dnd own device <device-id> <user>` → `own-device <device-id> <user>` — map an approved device UUID to a user. Device UUIDs appear in the DM's approval cards (and `.approved_devices.json`).
+- `/dm:dnd own char <user> <Character>` → `own-char <user> <Character>` — declare that `<user>` controls `<Character>` (the name as it appears in the stat sidebar).
+- `/dm:dnd own list` → `list` — show the current ownership map and DM assignment.
+
+Don't name a user identically to a *different* user's character — a whisper to that name would reach both (the audience namespace is shared). `mp_admin.py` warns on this collision.
+
+---
+
 ## `/dm:dnd roll <notation>`
 Run `scripts/dice.py <notation>`. Display output verbatim. Examples: `d20`, `2d6+3`, `d20 adv`, `4d6kh3`.
 

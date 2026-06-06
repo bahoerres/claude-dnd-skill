@@ -313,7 +313,7 @@ def _device_ok(device_id: str, ip: str) -> str:
                 "first_seen": _time.time(),
             }
             _need_persist_pending = True
-            _broadcast({"device_request": {"id": device_id, "ip": ip}})
+            _broadcast({"device_request": {"id": device_id, "ip": ip}}, audience="dm")
     # Persist outside the lock to avoid deadlock (Lock is not reentrant)
     if _need_persist_approved:
         _persist_approved_devices()
@@ -321,6 +321,131 @@ def _device_ok(device_id: str, ip: str) -> str:
     if _need_persist_pending:
         _persist_pending_devices()
     return "pending"
+
+
+# ─── Channel / audience layer: identity + ownership ──────────────────────────
+# Private filtering is OPT-IN. It engages only when a DM is assigned for the
+# session (the `dm:` flag in state.md). With no DM assigned, _mp_active() is
+# False and the server behaves exactly like the single-broadcast original.
+
+# Forward-auth (the X-Remote-User header) is an OPT-IN upgrade, trusted only
+# when a reverse proxy is the sole authenticating ingress. Off by default —
+# v1 identity is device-UUID pairing, and an unconditionally-trusted header
+# would let any direct LAN client claim to be the DM. Enable with
+# DND_FORWARD_AUTH=1; restrict which source addresses may set the header with
+# DND_TRUSTED_PROXIES (comma-separated; defaults to localhost, where the proxy
+# sits in a typical forward-auth deployment).
+_FORWARD_AUTH = (os.environ.get("DND_FORWARD_AUTH", "").strip().lower()
+                 not in ("", "0", "false", "no", "off"))
+_TRUSTED_PROXIES = set(filter(None, (
+    os.environ.get("DND_TRUSTED_PROXIES") or "127.0.0.1,::1").split(",")))
+
+
+def _campaign_dir():
+    """Resolve the current campaign directory via the canonical paths helper."""
+    try:
+        with open(CAMP_FILE) as _fh:
+            name = _fh.read().strip()
+    except Exception:
+        return None
+    if not name:
+        return None
+    try:
+        return _find_campaign(name)
+    except Exception:
+        return None
+
+
+def _ownership() -> dict:
+    """Per-campaign device->user and user->characters map. Missing file = empty."""
+    cdir = _campaign_dir()
+    if cdir is None:
+        return {"devices": {}, "characters": {}}
+    try:
+        with open(os.path.join(str(cdir), "ownership.json")) as fh:
+            data = json.load(fh)
+    except Exception:
+        return {"devices": {}, "characters": {}}
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("devices", {})
+    data.setdefault("characters", {})
+    return data
+
+
+def _device_user_map() -> dict:
+    return _ownership()["devices"]
+
+
+def _owned_characters(user) -> set:
+    if not user:
+        return set()
+    chars = _ownership()["characters"].get(user)
+    if not isinstance(chars, (list, tuple, set)):
+        return set()       # missing, null, or a stray string -> no characters
+    return set(chars)
+
+
+def _session_dm():
+    """Read the `dm:` assignment from the state.md Session Flags section.
+
+    Scoped to the `## Session Flags` block so a stray `dm:` line in free-form
+    prose elsewhere (e.g. the `## DM Notes` section) can't spuriously activate
+    multiplayer or pick a garbage DM. None = no DM assigned.
+    """
+    cdir = _campaign_dir()
+    if cdir is None:
+        return None
+    try:
+        with open(os.path.join(str(cdir), "state.md")) as _fh:
+            text = _fh.read()
+    except Exception:
+        return None
+    # Isolate the Session Flags section: from its header to the next "## " or EOF.
+    sec = re.search(r"(?ms)^##\s+Session Flags\s*$(.*?)(?=^##\s|\Z)", text)
+    if not sec:
+        return None
+    # Match a bullet `dm:` flag; capture stops at a newline or an inline `#` comment.
+    m = re.search(r"(?mi)^\s*[-*]?\s*dm:[ \t]*([^#\n]+?)[ \t]*(?:#.*)?$", sec.group(1))
+    if not m:
+        return None
+    return m.group(1).strip() or None
+
+
+def _mp_active() -> bool:
+    """Private filtering engages only when a DM is assigned for the session."""
+    return _session_dm() is not None
+
+
+def _resolve_identity(req) -> dict:
+    """Resolve the identity of an SSE connection.
+
+    v1 (default): the device UUID the browser stores in localStorage, passed on
+    the EventSource URL as ?device=. Forward-auth upgrade (opt-in via
+    DND_FORWARD_AUTH): a trusted X-Remote-User header, honored ONLY when the
+    connection originates from a configured trusted-proxy address — the proxy is
+    then the sole authenticating ingress. An unguarded header would let any
+    direct LAN client claim DM.
+    """
+    # Device id: EventSource passes it as ?device= (no custom headers on SSE);
+    # POST routes send it as the X-DND-Device header. Query wins when both set.
+    device_id = req.args.get("device") or req.headers.get("X-DND-Device") or ""
+    remote = req.remote_addr or ""
+    user = None
+    if _FORWARD_AUTH and remote in _TRUSTED_PROXIES:
+        user = req.headers.get("X-Remote-User") or None
+    if not user:
+        user = _device_user_map().get(device_id)
+    dm = _session_dm()
+    role = "dm" if (user and user == dm) else "player"
+    # Backward-compat host convenience: a direct localhost connection with no
+    # mapping is the trusted operator's own screen -> DM, so the host keeps full
+    # visibility. Disabled under forward-auth, where localhost is the proxy (and
+    # would otherwise promote every unauthenticated pass-through to DM).
+    if user is None and not _FORWARD_AUTH and remote in ("127.0.0.1", "::1"):
+        role = "dm"
+    return {"user": user, "device": device_id, "role": role,
+            "chars": _owned_characters(user)}
 
 
 # ─── Staged input system ──────────────────────────────────────────────────────
@@ -839,7 +964,7 @@ def _detect_scene(text: str) -> Optional[dict]:
 
 # ─── SSE client registry ─────────────────────────────────────────────────────
 
-_clients: list[queue.Queue] = []
+_clients: list[dict] = []   # records: {"q": Queue, "user", "role", "chars": set}
 _clients_lock = threading.Lock()
 
 # ─── Text replay log ──────────────────────────────────────────────────────────
@@ -1091,16 +1216,118 @@ def _persist_input_queue() -> None:
 _load_input_queue()
 
 
-def _broadcast(payload: dict) -> None:
+def _broadcast(payload: dict, audience="all") -> None:
+    # audience: "all" | "dm" | set of usernames/character names
+    active = _mp_active()            # resolve once, OUTSIDE the lock (no per-client disk I/O)
     with _clients_lock:
         dead = []
-        for q in _clients:
+        for c in _clients:
+            if not _visible_to(c, audience, active):
+                continue
             try:
-                q.put_nowait(payload)
+                c["q"].put_nowait(payload)
             except queue.Full:
-                dead.append(q)
-        for q in dead:
-            _clients.remove(q)
+                dead.append(c)
+        for c in dead:
+            _clients.remove(c)
+
+
+def _visible_to(client, audience, mp_active=None) -> bool:
+    # When private filtering is off, everything is public (current behavior).
+    if mp_active is None:
+        mp_active = _mp_active()
+    if not mp_active:
+        return True
+    if audience == "all":
+        return True
+    if client["role"] == "dm":
+        return True                      # DM sees everything
+    if audience == "dm":
+        return False                     # DM-only, this client is a player
+    if audience is None:
+        return False
+    # audience is a set of usernames / character names. Guard the bare-string
+    # footgun: set("Mira") -> {'M','i','r','a'}; a lone name means {name}.
+    aud = {audience} if isinstance(audience, str) else set(audience)
+    return bool(client["chars"] & aud) or client["user"] in aud
+
+
+def _audience_arg(value):
+    """Map a send-side audience string to a _broadcast audience value:
+    "all"/"public"/empty/non-string -> "all"; "dm" -> "dm"; any other name -> {name}.
+    A bare name addresses a character OR a user of that name (shared namespace —
+    do not name a user identically to a different character)."""
+    if not isinstance(value, str):
+        return "all"
+    v = value.strip()
+    vl = v.lower()
+    if not v or vl in ("all", "public"):
+        return "all"
+    if vl == "dm":
+        return "dm"
+    return {v}
+
+
+def _entry_visible(entry, ident, mp_active=None) -> bool:
+    # Replay-log filter: mirrors _visible_to but reads each entry's channel tag.
+    if mp_active is None:
+        mp_active = _mp_active()
+    if not mp_active:
+        return True
+    ch = entry.get("channel", "public")
+    if ch == "public" or ident["role"] == "dm":
+        return True
+    if ch == "dm":
+        return False                         # reserved DM token: real DMs admitted above
+    return ch == ident["user"] or ch in ident["chars"]
+
+
+# Fields of a player's stat entry that are legitimately shared at the table (the
+# sidebar party summary). Everything else (sheet, inventory, spell_slots, effects,
+# conditions, hit_dice, ...) is private to the owner. Adjust this set to widen or
+# narrow what the shared panel exposes — it is the public-field policy seam.
+_PUBLIC_STAT_FIELDS = ("name", "race", "class", "level", "hp")
+
+
+def _scope_stats(stats, ident) -> dict:
+    """DM (or filtering off): the full blob. A player: their own characters in
+    full + a public summary (_PUBLIC_STAT_FIELDS) of everyone else, so the party
+    panel still works without leaking another player's sheet."""
+    if not _mp_active() or ident.get("role") == "dm":
+        return stats
+    players = stats.get("players")
+    if not isinstance(players, list):
+        return stats
+    chars = ident.get("chars") or set()
+    scoped = []
+    for p in players:
+        if not isinstance(p, dict):
+            scoped.append(p)
+        elif p.get("name") in chars:
+            scoped.append(p)                                  # own character: full
+        else:
+            scoped.append({k: p[k] for k in _PUBLIC_STAT_FIELDS if k in p})
+    out = dict(stats)
+    out["players"] = scoped
+    return out
+
+
+def _broadcast_stats(current: dict) -> None:
+    """Broadcast a stats payload, scoped per connection when filtering is on.
+    Falls back to a plain broadcast when no DM is assigned (byte-for-byte
+    backward-compat). Client records double as the identity for _scope_stats."""
+    if not _mp_active():
+        _broadcast({"stats": current})
+        return
+    with _clients_lock:
+        dead = []
+        for c in _clients:
+            try:
+                c["q"].put_nowait({"stats": _scope_stats(current, c)})
+            except queue.Full:
+                dead.append(c)
+        for c in dead:
+            _clients.remove(c)
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
@@ -1211,6 +1438,17 @@ def chunk():
     if not _token_ok():
         return "Forbidden", 403
     data = request.get_json(silent=True) or {}
+    # Channel tag for the stored replay entry: "public" (default) | "dm" | a
+    # character/user name. Lets _entry_visible filter the on-connect replay so a
+    # private (e.g. dm-channel) line never replays to a player who shouldn't see it.
+    _aud = data.get("audience")
+    audience_tag = _aud.strip() if isinstance(_aud, str) and _aud.strip() else "public"
+    # Normalise reserved tokens (case-insensitive); "all" is public for replay.
+    _audl = audience_tag.lower()
+    if _audl in ("all", "public"):
+        audience_tag = "public"
+    elif _audl == "dm":
+        audience_tag = "dm"
     raw = data.get("text", "")
     if not raw:
         return "", 204
@@ -1240,13 +1478,14 @@ def chunk():
         if is_milestone_award and data.get("reason"):
             payload["reason"] = str(data["reason"]).strip()[:240]
             log_entry["reason"] = payload["reason"]
+        log_entry["channel"] = audience_tag
         with _text_log_lock:
             _text_log.append(log_entry)
         with _tail_lock:
             _tail_buffer.append(log_entry)
         _persist_log()
         _persist_tail()
-        _broadcast(payload)
+        _broadcast(payload, audience=_audience_arg(audience_tag))
         return "", 204
 
     # Inspiration and XP awards carry no text from stdin — build synthetic text.
@@ -1260,13 +1499,14 @@ def chunk():
         if reason:
             payload["reason"] = reason
             log_entry["reason"] = reason
+        log_entry["channel"] = audience_tag
         with _text_log_lock:
             _text_log.append(log_entry)
         with _tail_lock:
             _tail_buffer.append(log_entry)
         _persist_log()
         _persist_tail()
-        _broadcast(payload)
+        _broadcast(payload, audience=_audience_arg(audience_tag))
         # Also update player inspiration state in stats.
         # NOTE: _persist_stats() acquires _stats_lock internally — capture the snapshot
         # inside the lock, then call persist/broadcast OUTSIDE to avoid deadlock.
@@ -1279,7 +1519,7 @@ def chunk():
                 stats_snapshot = dict(_current_stats)
         if stats_snapshot is not None:
             _persist_stats()
-            _broadcast({"stats": stats_snapshot})
+            _broadcast_stats(stats_snapshot)
         return "", 204
 
     if is_xp_award:
@@ -1288,13 +1528,14 @@ def chunk():
             return "", 204
         payload = {"xp_award": xp_data, "text": xp_data.get("summary", "")}
         log_entry = {"xp_award": xp_data, "text": xp_data.get("summary", "")}
+        log_entry["channel"] = audience_tag
         with _text_log_lock:
             _text_log.append(log_entry)
         with _tail_lock:
             _tail_buffer.append(log_entry)
         _persist_log()
         _persist_tail()
-        _broadcast(payload)
+        _broadcast(payload, audience=_audience_arg(audience_tag))
         return "", 204
 
     # Player/npc/dice/tutor/action text comes from send.py (no ANSI/chrome) — light clean only.
@@ -1338,6 +1579,7 @@ def chunk():
         log_entry["dice"] = True
     elif is_tutor:
         log_entry["tutor"] = True
+    log_entry["channel"] = audience_tag
 
     # Stamp campaign on tail entries to prevent bleed when switching campaigns
     try:
@@ -1354,7 +1596,7 @@ def chunk():
 
     _persist_log()
     _persist_tail()
-    _broadcast(payload)
+    _broadcast(payload, audience=_audience_arg(audience_tag))
     return "", 204
 
 
@@ -1618,7 +1860,7 @@ def stats():
             current = dict(_current_stats)
 
     _persist_stats()
-    _broadcast({"stats": current})
+    _broadcast_stats(current)
     # Broadcast any round-based effect expiries after the stats update
     for evt in _effect_expire_events:
         _broadcast({"effect_expired": evt})
@@ -1667,7 +1909,7 @@ def effects_expire():
 
     if expire_evt:
         _broadcast({"effect_expired": expire_evt})
-    _broadcast({"stats": current})
+    _broadcast_stats(current)
     _persist_stats()
     return "", 204
 
@@ -2252,6 +2494,10 @@ def device_approve():
     """DM approves a pending device. Body: {"id": "<device_id>"}"""
     if not _token_ok():
         return "Forbidden", 403
+    # Write-path authz: the shared LAN token is not DM-distinguishing, so when a
+    # DM is assigned only the DM may approve devices (identity from X-DND-Device).
+    if _mp_active() and _resolve_identity(request)["role"] != "dm":
+        return "Forbidden", 403
     device_id = str((request.get_json(force=True, silent=True) or {}).get("id", ""))
     with _devices_lock:
         _pending_devices.pop(device_id, None)
@@ -2266,6 +2512,8 @@ def device_approve():
 def device_deny():
     """DM denies a pending device. Body: {"id": "<device_id>"}"""
     if not _token_ok():
+        return "Forbidden", 403
+    if _mp_active() and _resolve_identity(request)["role"] != "dm":
         return "Forbidden", 403
     device_id = str((request.get_json(force=True, silent=True) or {}).get("id", ""))
     with _devices_lock:
@@ -2484,57 +2732,61 @@ def drain_player_input():
     return jsonify(drained), 200
 
 
-@app.route("/stream")
-def stream():
-    q: queue.Queue = queue.Queue(maxsize=256)
-    with _clients_lock:
-        _clients.append(q)
+def _catchup_payloads(ident) -> list:
+    """On-connect catch-up payloads for a freshly connected client, identity-scoped.
 
-    # Send the current scene immediately on connect so the browser
-    # starts with the right background even mid-session.
-    initial_scene = SCENES[_current_scene_name] | {"name": _current_scene_name}
-    q.put_nowait({"scene": initial_scene})
+    Mirrors the prior inline /stream block. Scoping closes the leak surface: the
+    replay log is filtered by channel tag, device-approval requests are DM-only,
+    and stats are scoped per identity (own sheet full, others summary).
 
-    # Replay recent entries so late-connecting / reconnecting browsers catch up.
-    # Sent as a typed batch so the browser can render each item (dm/player/dice) correctly.
+    Staged inputs / pending / queue — and v2's dice_pending/dice_request payloads
+    — remain full for now: those are table-coordination / per-character roll
+    signals entangled with the combat-UX open item. Scoping the dice payloads
+    (a phone only pre-filling its own requests, DM-secret DCs) is a deferred
+    new-surface decision and needs the live broadcast side too. Everything
+    short-circuits to full when no DM is assigned (backward-compat).
+    """
+    active = _mp_active()
+    out: list = []
+
+    # Scene — public; first so the browser starts on the right background.
+    out.append({"scene": SCENES[_current_scene_name] | {"name": _current_scene_name}})
+
+    # Replay recent entries (typed batch) — filtered by each entry's channel tag.
     with _text_log_lock:
-        recent = list(_text_log)
+        recent = [e for e in _text_log if _entry_visible(e, ident, active)]
     if recent:
-        q.put_nowait({"replay_batch": recent})
+        out.append({"replay_batch": recent})
 
-    # Send current stats so the sidebar is populated immediately on (re)connect.
+    # Stats — DM/own full, other players summarised (per-connection view privacy).
     with _stats_lock:
         if _current_stats:
-            q.put_nowait({"stats": dict(_current_stats)})
+            out.append({"stats": _scope_stats(dict(_current_stats), ident)})
 
-    # Send current input queue so the pending indicator is accurate on reconnect.
+    # Pending input — full (deferred).
     with _input_lock:
         if _input_queue:
-            q.put_nowait({"pending_input": list(_input_queue)})
+            out.append({"pending_input": list(_input_queue)})
 
-    # Send current staged inputs so the panel reflects live state on reconnect.
+    # Staged inputs — full (deferred).
     with _staged_lock:
         if _staged:
-            q.put_nowait({"staged_inputs": _staged_snapshot()})
+            out.append({"staged_inputs": _staged_snapshot()})
 
-    # Send current queue status so the 'Queued' indicator survives page reload.
+    # Queue status — full (deferred).
     with _queue_status_lock:
         if _queue_status:
-            q.put_nowait({"queue_status": list(_queue_status)})
+            out.append({"queue_status": list(_queue_status)})
 
-    # Send current pending dice requests so the "Waiting on…" badge survives reload.
+    # Pending-dice badge + active dice requests — full for now (deferred new
+    # surface; see docstring). Carried over verbatim from upstream's /stream.
     snap = _dice_pending_snapshot()
     if snap:
-        q.put_nowait({"dice_pending": snap})
-
-    # Replay every active dice_request so phones that connected *after* a DM
-    # broadcast still pre-fill their pad and store the request_id. Without this,
-    # a late-joining or reloaded phone rolls without a request_id, the roll logs
-    # but the pending set never drains, and the "Waiting on…" banner gets stuck.
+        out.append({"dice_pending": snap})
     with _dice_pending_lock:
-        active = [(rid, dict(e["meta"]), sorted(e["chars"])) for rid, e in _dice_pending.items() if e["chars"]]
-    for rid, meta, chars in active:
-        q.put_nowait({"dice_request": {
+        active_reqs = [(rid, dict(e["meta"]), sorted(e["chars"])) for rid, e in _dice_pending.items() if e["chars"]]
+    for rid, meta, chars in active_reqs:
+        out.append({"dice_request": {
             "request_id": rid,
             "characters": chars,
             "character": chars[0] if len(chars) == 1 else "any",
@@ -2545,19 +2797,33 @@ def stream():
             "dc": meta.get("dc"),
         }})
 
-    # Replay autorun cycle so reconnecting clients resume the countdown from correct elapsed position.
+    # Autorun cycle / threshold — public.
     with _autorun_cycle_lock:
         if _autorun_cycle:
-            q.put_nowait({"autorun_cycle": dict(_autorun_cycle)})
-
-    # Replay threshold so the ready counter reflects the correct target on reconnect.
+            out.append({"autorun_cycle": dict(_autorun_cycle)})
     if _autorun_threshold is not None:
-        q.put_nowait({"autorun_threshold": _autorun_threshold})
+        out.append({"autorun_threshold": _autorun_threshold})
 
-    # Send any pending device approval requests so the DM sees them on reconnect.
-    with _devices_lock:
-        for dev in list(_pending_devices.values()):
-            q.put_nowait({"device_request": {"id": dev["id"], "ip": dev["ip"]}})
+    # Device approval requests — DM-only (everyone when filtering is off).
+    if not active or ident["role"] == "dm":
+        with _devices_lock:
+            for dev in list(_pending_devices.values()):
+                out.append({"device_request": {"id": dev["id"], "ip": dev["ip"]}})
+
+    return out
+
+
+@app.route("/stream")
+def stream():
+    q: queue.Queue = queue.Queue(maxsize=256)
+    ident = _resolve_identity(request)
+    client = {"q": q, "user": ident["user"], "role": ident["role"], "chars": ident["chars"]}
+    with _clients_lock:
+        _clients.append(client)
+
+    # On-connect catch-up, identity-scoped (see _catchup_payloads).
+    for payload in _catchup_payloads(ident):
+        q.put_nowait(payload)
 
     def generate():
         try:
@@ -2570,7 +2836,7 @@ def stream():
         except GeneratorExit:
             with _clients_lock:
                 try:
-                    _clients.remove(q)
+                    _clients.remove(client)
                 except ValueError:
                     pass
 

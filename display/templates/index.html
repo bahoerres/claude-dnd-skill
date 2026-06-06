@@ -4632,7 +4632,8 @@ let evtSource = null;
 let reconnectDelay = 1000;
 
 function connect() {
-  evtSource = new EventSource('/stream');
+  // Identify this browser to the server so it can scope private channels.
+  evtSource = new EventSource('/stream?device=' + encodeURIComponent(_deviceId || ''));
 
   evtSource.onopen = () => {
     reconnectDelay = 1000;

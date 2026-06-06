@@ -234,7 +234,7 @@ def _device_ok(device_id: str, ip: str) -> str:
                 "first_seen": _time.time(),
             }
             _need_persist_pending = True
-            _broadcast({"device_request": {"id": device_id, "ip": ip}})
+            _broadcast({"device_request": {"id": device_id, "ip": ip}}, audience="dm")
     # Persist outside the lock to avoid deadlock (Lock is not reentrant)
     if _need_persist_approved:
         _persist_approved_devices()
@@ -2106,6 +2106,66 @@ def drain_player_input():
     return jsonify(drained), 200
 
 
+def _catchup_payloads(ident) -> list:
+    """On-connect catch-up payloads for a freshly connected client, identity-scoped.
+
+    Mirrors the prior inline /stream block. PR2 scoping closes the DM-private
+    leak surface: the replay log is filtered by channel tag, and device-approval
+    requests are DM-only (everyone when filtering is off — backward-compat).
+
+    Stats / staged inputs / pending / queue remain full for now: per-player view
+    privacy for those is a deferred product decision (they are player-shared
+    table data, not secret DM data) and a consistent scope needs per-audience
+    LIVE sends, not just catch-up filtering. See the channel-layer plan.
+    """
+    active = _mp_active()
+    out: list = []
+
+    # Scene — public; first so the browser starts on the right background.
+    out.append({"scene": SCENES[_current_scene_name] | {"name": _current_scene_name}})
+
+    # Replay recent entries (typed batch) — filtered by each entry's channel tag.
+    with _text_log_lock:
+        recent = [e for e in _text_log if _entry_visible(e, ident, active)]
+    if recent:
+        out.append({"replay_batch": recent})
+
+    # Stats — full party (per-player view privacy deferred).
+    with _stats_lock:
+        if _current_stats:
+            out.append({"stats": dict(_current_stats)})
+
+    # Pending input — full (deferred).
+    with _input_lock:
+        if _input_queue:
+            out.append({"pending_input": list(_input_queue)})
+
+    # Staged inputs — full (deferred).
+    with _staged_lock:
+        if _staged:
+            out.append({"staged_inputs": _staged_snapshot()})
+
+    # Queue status — full (deferred).
+    with _queue_status_lock:
+        if _queue_status:
+            out.append({"queue_status": list(_queue_status)})
+
+    # Autorun cycle / threshold — public.
+    with _autorun_cycle_lock:
+        if _autorun_cycle:
+            out.append({"autorun_cycle": dict(_autorun_cycle)})
+    if _autorun_threshold is not None:
+        out.append({"autorun_threshold": _autorun_threshold})
+
+    # Device approval requests — DM-only (everyone when filtering is off).
+    if not active or ident["role"] == "dm":
+        with _devices_lock:
+            for dev in list(_pending_devices.values()):
+                out.append({"device_request": {"id": dev["id"], "ip": dev["ip"]}})
+
+    return out
+
+
 @app.route("/stream")
 def stream():
     q: queue.Queue = queue.Queue(maxsize=256)
@@ -2114,51 +2174,9 @@ def stream():
     with _clients_lock:
         _clients.append(client)
 
-    # Send the current scene immediately on connect so the browser
-    # starts with the right background even mid-session.
-    initial_scene = SCENES[_current_scene_name] | {"name": _current_scene_name}
-    q.put_nowait({"scene": initial_scene})
-
-    # Replay recent entries so late-connecting / reconnecting browsers catch up.
-    # Sent as a typed batch so the browser can render each item (dm/player/dice) correctly.
-    with _text_log_lock:
-        recent = list(_text_log)
-    if recent:
-        q.put_nowait({"replay_batch": recent})
-
-    # Send current stats so the sidebar is populated immediately on (re)connect.
-    with _stats_lock:
-        if _current_stats:
-            q.put_nowait({"stats": dict(_current_stats)})
-
-    # Send current input queue so the pending indicator is accurate on reconnect.
-    with _input_lock:
-        if _input_queue:
-            q.put_nowait({"pending_input": list(_input_queue)})
-
-    # Send current staged inputs so the panel reflects live state on reconnect.
-    with _staged_lock:
-        if _staged:
-            q.put_nowait({"staged_inputs": _staged_snapshot()})
-
-    # Send current queue status so the 'Queued' indicator survives page reload.
-    with _queue_status_lock:
-        if _queue_status:
-            q.put_nowait({"queue_status": list(_queue_status)})
-
-    # Replay autorun cycle so reconnecting clients resume the countdown from correct elapsed position.
-    with _autorun_cycle_lock:
-        if _autorun_cycle:
-            q.put_nowait({"autorun_cycle": dict(_autorun_cycle)})
-
-    # Replay threshold so the ready counter reflects the correct target on reconnect.
-    if _autorun_threshold is not None:
-        q.put_nowait({"autorun_threshold": _autorun_threshold})
-
-    # Send any pending device approval requests so the DM sees them on reconnect.
-    with _devices_lock:
-        for dev in list(_pending_devices.values()):
-            q.put_nowait({"device_request": {"id": dev["id"], "ip": dev["ip"]}})
+    # On-connect catch-up, identity-scoped (see _catchup_payloads).
+    for payload in _catchup_payloads(ident):
+        q.put_nowait(payload)
 
     def generate():
         try:

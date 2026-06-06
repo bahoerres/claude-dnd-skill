@@ -1861,9 +1861,12 @@ def stats():
 
     _persist_stats()
     _broadcast_stats(current)
-    # Broadcast any round-based effect expiries after the stats update
+    # Broadcast any round-based effect expiries after the stats update. Scope to
+    # the owning character (+ DM) — effects are private under MP filtering
+    # (_scope_stats strips them), so an expiry must not re-announce another
+    # player's effect name/concentration to the whole table.
     for evt in _effect_expire_events:
-        _broadcast({"effect_expired": evt})
+        _broadcast({"effect_expired": evt}, audience={evt["owner"]})
 
     # Update expected player count for staged-input auto-trigger
     global _expected_count
@@ -1908,7 +1911,8 @@ def effects_expire():
         current = dict(_current_stats)
 
     if expire_evt:
-        _broadcast({"effect_expired": expire_evt})
+        # Scope to the owning character (+ DM) — effects are private (see /stats).
+        _broadcast({"effect_expired": expire_evt}, audience={expire_evt["owner"]})
     _broadcast_stats(current)
     _persist_stats()
     return "", 204
@@ -2398,6 +2402,15 @@ def dice_request():
             "dc": dc_val,
         }
     }
+    # TODO(channel-layer, HIGH): when a DM is assigned, this leaks a DM-prescribed
+    # roll's TARGET characters and its SECRET DC to every browser (the frontend
+    # only gates auto-fill, not delivery — the JSON incl. dc is observable in
+    # DevTools). The hidden-DC mechanic is defeated. Fix: send a DC-bearing copy
+    # with audience="dm" and a DC-stripped copy with audience=set(trackable
+    # targets) for players; keep an untargeted "any" request as audience="all".
+    # Same scoping needed for the dice_pending badge and the dice_request replay
+    # in _catchup_payloads. Deferred only because v2's dice feature is intricate
+    # and untested — do it with dice-flow tests. See the channel-layer plan.
     _broadcast(payload)
     return jsonify({
         "request_id": request_id,

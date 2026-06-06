@@ -1121,7 +1121,18 @@ PR3 (Task 6 live audience routing + device write-path authz + Task 7a admin surf
 
 ## Status: PR1 + PR2 + PR3 shipped
 
-The buildable spine is complete on `feat/multiplayer-channel-layer` (local commits, not pushed). The DM-private channel — the design's killer feature — works end to end: assign a DM (`/dnd dm assign`), map ownership (`/dnd own`), and Claude whispers to the GM screen with `send.py --audience dm`, with scoped stats, channel-filtered replay, and DM-only device approvals. **Remaining: the assistant-mode prompt regime (Task 7b), gated on watching a live session.**
+The buildable spine is complete on `feat/multiplayer-channel-layer` (v1; PR #1 on the fork). The DM-private channel — the design's killer feature — works end to end: assign a DM (`/dnd dm assign`), map ownership (`/dnd own`), and Claude whispers to the GM screen with `send.py --audience dm`, with scoped stats, channel-filtered replay, and DM-only device approvals. Validated live over real SSE. **Remaining: the assistant-mode prompt regime (Task 7b), gated on watching a live session.**
+
+---
+
+## v2 port (2026-06-06)
+
+Upstream had moved to **v2.1.3** (plugin restructure under `skills/dnd/`, `/dm:dnd` commands, + TTS/phone-dice/themes/i18n). The channel layer was re-applied onto v2 on branch `feat/multiplayer-channel-layer-v2`. The seams survived, so the port was a faithful git-apply of the v1 diff (16/17 app hunks clean) plus two hand-ports: `_catchup_payloads` (folding in v2's new dice payloads) and the `/dm:dnd` command docs. **183 tests green on v2.**
+
+A focused review then ran on v2's **new surfaces**:
+- **Fixed:** `effect_expired` was broadcast to all, re-leaking another character's effect name + concentration — the very `effects` field `_scope_stats` strips. Now scoped to `audience={owner}` (DM admitted automatically). The port created this inconsistency by adding the effects-are-private policy; closing it.
+- **Deferred — HIGH, flagged in code (`TODO(channel-layer, HIGH)` at the `/dice-request` route):** a DM-prescribed `dice_request` broadcasts its **target characters and secret DC to every browser** (the frontend only gates auto-fill, not delivery — the DC is observable in DevTools). The hidden-DC mechanic is defeated. **Fix spec:** send a DC-bearing copy `audience="dm"` + a DC-stripped copy `audience=set(trackable targets)` for players; keep an untargeted "any" request `audience="all"`. Same scoping for the `dice_pending` badge and the `dice_request` replay in `_catchup_payloads`. Deferred because v2's dice feature is intricate and **untested** — do it with dice-flow tests, not a rushed change.
+- Confirmed acceptable: staged/pending/queue deferral; the inert `channel:"public"` replay field.
 
 ---
 

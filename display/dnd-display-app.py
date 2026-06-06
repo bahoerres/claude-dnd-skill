@@ -852,7 +852,7 @@ def _detect_scene(text: str) -> Optional[dict]:
 
 # ─── SSE client registry ─────────────────────────────────────────────────────
 
-_clients: list[queue.Queue] = []
+_clients: list[dict] = []   # records: {"q": Queue, "user", "role", "chars": set}
 _clients_lock = threading.Lock()
 
 # ─── Text replay log ──────────────────────────────────────────────────────────
@@ -1093,13 +1093,13 @@ _load_input_queue()
 def _broadcast(payload: dict) -> None:
     with _clients_lock:
         dead = []
-        for q in _clients:
+        for c in _clients:
             try:
-                q.put_nowait(payload)
+                c["q"].put_nowait(payload)
             except queue.Full:
-                dead.append(q)
-        for q in dead:
-            _clients.remove(q)
+                dead.append(c)
+        for c in dead:
+            _clients.remove(c)
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
@@ -2034,8 +2034,10 @@ def drain_player_input():
 @app.route("/stream")
 def stream():
     q: queue.Queue = queue.Queue(maxsize=256)
+    ident = _resolve_identity(request)
+    client = {"q": q, "user": ident["user"], "role": ident["role"], "chars": ident["chars"]}
     with _clients_lock:
-        _clients.append(q)
+        _clients.append(client)
 
     # Send the current scene immediately on connect so the browser
     # starts with the right background even mid-session.
@@ -2094,7 +2096,7 @@ def stream():
         except GeneratorExit:
             with _clients_lock:
                 try:
-                    _clients.remove(q)
+                    _clients.remove(client)
                 except ValueError:
                     pass
 

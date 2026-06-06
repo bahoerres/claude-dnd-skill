@@ -249,6 +249,19 @@ def _device_ok(device_id: str, ip: str) -> str:
 # session (the `dm:` flag in state.md). With no DM assigned, _mp_active() is
 # False and the server behaves exactly like the single-broadcast original.
 
+# Forward-auth (the X-Remote-User header) is an OPT-IN upgrade, trusted only
+# when a reverse proxy is the sole authenticating ingress. Off by default —
+# v1 identity is device-UUID pairing, and an unconditionally-trusted header
+# would let any direct LAN client claim to be the DM. Enable with
+# DND_FORWARD_AUTH=1; restrict which source addresses may set the header with
+# DND_TRUSTED_PROXIES (comma-separated; defaults to localhost, where the proxy
+# sits in a typical forward-auth deployment).
+_FORWARD_AUTH = (os.environ.get("DND_FORWARD_AUTH", "").strip().lower()
+                 not in ("", "0", "false", "no", "off"))
+_TRUSTED_PROXIES = set(filter(None, (
+    os.environ.get("DND_TRUSTED_PROXIES") or "127.0.0.1,::1").split(",")))
+
+
 def _campaign_dir():
     """Resolve the current campaign directory via the canonical paths helper."""
     try:
@@ -288,11 +301,19 @@ def _device_user_map() -> dict:
 def _owned_characters(user) -> set:
     if not user:
         return set()
-    return set(_ownership()["characters"].get(user, []))
+    chars = _ownership()["characters"].get(user)
+    if not isinstance(chars, (list, tuple, set)):
+        return set()       # missing, null, or a stray string -> no characters
+    return set(chars)
 
 
 def _session_dm():
-    """Read the `dm:` assignment from state.md Session Flags. None = no DM."""
+    """Read the `dm:` assignment from the state.md Session Flags section.
+
+    Scoped to the `## Session Flags` block so a stray `dm:` line in free-form
+    prose elsewhere (e.g. the `## DM Notes` section) can't spuriously activate
+    multiplayer or pick a garbage DM. None = no DM assigned.
+    """
     cdir = _campaign_dir()
     if cdir is None:
         return None
@@ -301,7 +322,12 @@ def _session_dm():
             text = _fh.read()
     except Exception:
         return None
-    m = re.search(r"(?mi)^\s*[-*]?\s*dm:\s*(.+?)\s*$", text)
+    # Isolate the Session Flags section: from its header to the next "## " or EOF.
+    sec = re.search(r"(?ms)^##\s+Session Flags\s*$(.*?)(?=^##\s|\Z)", text)
+    if not sec:
+        return None
+    # Match a bullet `dm:` flag; capture stops at a newline or an inline `#` comment.
+    m = re.search(r"(?mi)^\s*[-*]?\s*dm:[ \t]*([^#\n]+?)[ \t]*(?:#.*)?$", sec.group(1))
     if not m:
         return None
     return m.group(1).strip() or None
@@ -315,22 +341,27 @@ def _mp_active() -> bool:
 def _resolve_identity(req) -> dict:
     """Resolve the identity of an SSE connection.
 
-    Upgrade path: a trusted X-Remote-User header injected by a forward-auth
-    proxy (only trusted when such a proxy is the sole ingress). v1 path: the
-    device UUID the browser stores in localStorage, passed on the EventSource
-    URL as ?device=.
+    v1 (default): the device UUID the browser stores in localStorage, passed on
+    the EventSource URL as ?device=. Forward-auth upgrade (opt-in via
+    DND_FORWARD_AUTH): a trusted X-Remote-User header, honored ONLY when the
+    connection originates from a configured trusted-proxy address — the proxy is
+    then the sole authenticating ingress. An unguarded header would let any
+    direct LAN client claim DM.
     """
-    user = req.headers.get("X-Remote-User")
     device_id = req.args.get("device") or ""
+    remote = req.remote_addr or ""
+    user = None
+    if _FORWARD_AUTH and remote in _TRUSTED_PROXIES:
+        user = req.headers.get("X-Remote-User") or None
     if not user:
         user = _device_user_map().get(device_id)
     dm = _session_dm()
     role = "dm" if (user and user == dm) else "player"
-    # Backward-compat: the local host machine running the server is the trusted
-    # operator. When nothing maps it and it connects from localhost, treat it as
-    # DM so the host screen keeps seeing everything. Explicit mapping overrides.
-    remote = req.remote_addr or ""
-    if user is None and remote in ("127.0.0.1", "::1"):
+    # Backward-compat host convenience: a direct localhost connection with no
+    # mapping is the trusted operator's own screen -> DM, so the host keeps full
+    # visibility. Disabled under forward-auth, where localhost is the proxy (and
+    # would otherwise promote every unauthenticated pass-through to DM).
+    if user is None and not _FORWARD_AUTH and remote in ("127.0.0.1", "::1"):
         role = "dm"
     return {"user": user, "device": device_id, "role": role,
             "chars": _owned_characters(user)}
@@ -1092,10 +1123,11 @@ _load_input_queue()
 
 def _broadcast(payload: dict, audience="all") -> None:
     # audience: "all" | "dm" | set of usernames/character names
+    active = _mp_active()            # resolve once, OUTSIDE the lock (no per-client disk I/O)
     with _clients_lock:
         dead = []
         for c in _clients:
-            if not _visible_to(c, audience):
+            if not _visible_to(c, audience, active):
                 continue
             try:
                 c["q"].put_nowait(payload)
@@ -1105,9 +1137,11 @@ def _broadcast(payload: dict, audience="all") -> None:
             _clients.remove(c)
 
 
-def _visible_to(client, audience) -> bool:
+def _visible_to(client, audience, mp_active=None) -> bool:
     # When private filtering is off, everything is public (current behavior).
-    if not _mp_active():
+    if mp_active is None:
+        mp_active = _mp_active()
+    if not mp_active:
         return True
     if audience == "all":
         return True
@@ -1115,8 +1149,11 @@ def _visible_to(client, audience) -> bool:
         return True                      # DM sees everything
     if audience == "dm":
         return False                     # DM-only, this client is a player
-    # audience is a set of usernames / character names
-    aud = set(audience)
+    if audience is None:
+        return False
+    # audience is a set of usernames / character names. Guard the bare-string
+    # footgun: set("Mira") -> {'M','i','r','a'}; a lone name means {name}.
+    aud = {audience} if isinstance(audience, str) else set(audience)
     return bool(client["chars"] & aud) or client["user"] in aud
 
 

@@ -1090,16 +1090,34 @@ def _persist_input_queue() -> None:
 _load_input_queue()
 
 
-def _broadcast(payload: dict) -> None:
+def _broadcast(payload: dict, audience="all") -> None:
+    # audience: "all" | "dm" | set of usernames/character names
     with _clients_lock:
         dead = []
         for c in _clients:
+            if not _visible_to(c, audience):
+                continue
             try:
                 c["q"].put_nowait(payload)
             except queue.Full:
                 dead.append(c)
         for c in dead:
             _clients.remove(c)
+
+
+def _visible_to(client, audience) -> bool:
+    # When private filtering is off, everything is public (current behavior).
+    if not _mp_active():
+        return True
+    if audience == "all":
+        return True
+    if client["role"] == "dm":
+        return True                      # DM sees everything
+    if audience == "dm":
+        return False                     # DM-only, this client is a player
+    # audience is a set of usernames / character names
+    aud = set(audience)
+    return bool(client["chars"] & aud) or client["user"] in aud
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────

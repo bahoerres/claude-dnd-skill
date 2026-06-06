@@ -1157,6 +1157,21 @@ def _visible_to(client, audience, mp_active=None) -> bool:
     return bool(client["chars"] & aud) or client["user"] in aud
 
 
+def _audience_arg(value):
+    """Map a send-side audience string to a _broadcast audience value:
+    "all"/"public"/empty/non-string -> "all"; "dm" -> "dm"; any other name -> {name}.
+    A bare name addresses a character OR a user of that name (shared namespace —
+    do not name a user identically to a different character)."""
+    if not isinstance(value, str):
+        return "all"
+    v = value.strip()
+    if not v or v in ("all", "public"):
+        return "all"
+    if v == "dm":
+        return "dm"
+    return {v}
+
+
 def _entry_visible(entry, ident, mp_active=None) -> bool:
     # Replay-log filter: mirrors _visible_to but reads each entry's channel tag.
     if mp_active is None:
@@ -1363,7 +1378,7 @@ def chunk():
             _tail_buffer.append(log_entry)
         _persist_log()
         _persist_tail()
-        _broadcast(payload)
+        _broadcast(payload, audience=_audience_arg(audience_tag))
         return "", 204
 
     # Inspiration and XP awards carry no text from stdin — build synthetic text.
@@ -1384,7 +1399,7 @@ def chunk():
             _tail_buffer.append(log_entry)
         _persist_log()
         _persist_tail()
-        _broadcast(payload)
+        _broadcast(payload, audience=_audience_arg(audience_tag))
         # Also update player inspiration state in stats.
         # NOTE: _persist_stats() acquires _stats_lock internally — capture the snapshot
         # inside the lock, then call persist/broadcast OUTSIDE to avoid deadlock.
@@ -1413,7 +1428,7 @@ def chunk():
             _tail_buffer.append(log_entry)
         _persist_log()
         _persist_tail()
-        _broadcast(payload)
+        _broadcast(payload, audience=_audience_arg(audience_tag))
         return "", 204
 
     # Player/npc/dice/tutor/action text comes from send.py (no ANSI/chrome) — light clean only.
@@ -1474,7 +1489,7 @@ def chunk():
 
     _persist_log()
     _persist_tail()
-    _broadcast(payload)
+    _broadcast(payload, audience=_audience_arg(audience_tag))
     return "", 204
 
 

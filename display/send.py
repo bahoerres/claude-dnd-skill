@@ -361,7 +361,7 @@ def _build_stats_payload(args) -> "dict | None":
     return {"players": list(players.values())}
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Send text to the DnD display server.")
     parser.add_argument(
         "--player", metavar="NAME",
@@ -429,12 +429,22 @@ def main() -> None:
     parser.add_argument("--effect-end", action="append", metavar="NAME:SPELL",
         help="End a timed effect: NAME:SPELL (narrative end — broken, dispelled, player drops)")
 
+    # ── Audience routing (private channels) ───────────────────────────────────
+    parser.add_argument("--audience", metavar="all|dm|<name>", default=None,
+        help="Route this send: 'all' (default broadcast), 'dm' (private DM "
+             "channel / GM screen), or a character/user name to whisper. Only "
+             "filters when a DM is assigned; otherwise everyone sees it.")
+
     # ── Diagnostics ───────────────────────────────────────────────────────────
     parser.add_argument("--verify", action="store_true",
         help="After sending, GET /health and confirm the broadcast was received. "
              "Surfaces a clear stderr line on mismatch — use during dev/debug.")
 
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> None:
+    args = _build_parser().parse_args()
 
     # Two categories of flags drive whether to read stdin:
     #   1. Content flags (--player/--npc/--dice/--tutor/--action): body REQUIRED.
@@ -543,6 +553,8 @@ def main() -> None:
                 payload["dice"] = True
             elif args.tutor:
                 payload["tutor"] = True
+            if args.audience:
+                payload["audience"] = args.audience
 
             issues = _validate_payload(payload, "chunk")
             if issues:

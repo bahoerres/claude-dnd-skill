@@ -1103,6 +1103,28 @@ PR2 (Tasks 4–5, "leak closure") shipped, then went through the same 5-dimensio
 
 ---
 
+## PR3 review outcomes (2026-06-06)
+
+PR3 (Task 6 live audience routing + device write-path authz + Task 7a admin surface) shipped, then went through the 5-dimension adversarial review (17 findings).
+
+**Fixed in PR3:**
+- **Award-path `--audience`** — `send.py` now attaches audience to the inspiration/xp/milestone bodies (the server already routed all four `/chunk` paths; the CLI was the un-built half). The "leak" sub-claim was a verified false alarm (`_broadcast_stats` is scoped).
+- **Casing footgun** — `_audience_arg` + the `/chunk` channel tag normalise reserved tokens case-insensitively; `all` is stored as the `public` channel (it was being tagged as a private channel named `all`, which would hide the line from players on replay).
+- **`mp_admin` robustness** — `load_ownership` coerces malformed `devices`/`characters` sub-values; `#` rejected in user/DM names (a `#` was truncated by the state.md comment regex, **silently demoting the real DM to player**); empty device ids rejected; `set_dm` drops stale duplicate `dm:` lines.
+
+**Deferred (documented):**
+- **Device UUID travels in plaintext when TLS is off.** PR3 makes the device UUID security-relevant (it gates DM authz), but `--tls` is opt-in. Inherent to the device-pairing model; forward-auth (`DND_FORWARD_AUTH`) is the upgrade. Recommend documenting "use `--tls` on untrusted networks once a DM is assigned."
+- **`set_dm` hard-exits when state.md has no `## Session Flags` section** (the server treats missing as no-DM). Real campaigns always have the section (from the template); left as a clear error.
+- **Assistant-mode prompt regime (Task 7b)** — still gated. The `/dnd dm` note says so: assigning a DM today gives the private-channel plumbing (whispers, scoped stats, GM screen, DM-only approvals) but Claude does not yet auto-demote. Revisit after a session runs on the backbone.
+
+---
+
+## Status: PR1 + PR2 + PR3 shipped
+
+The buildable spine is complete on `feat/multiplayer-channel-layer` (local commits, not pushed). The DM-private channel — the design's killer feature — works end to end: assign a DM (`/dnd dm assign`), map ownership (`/dnd own`), and Claude whispers to the GM screen with `send.py --audience dm`, with scoped stats, channel-filtered replay, and DM-only device approvals. **Remaining: the assistant-mode prompt regime (Task 7b), gated on watching a live session.**
+
+---
+
 ## Execution handoff
 
 **Plan complete and saved to `docs/superpowers/plans/2026-06-05-multiplayer-channel-layer.md`.**

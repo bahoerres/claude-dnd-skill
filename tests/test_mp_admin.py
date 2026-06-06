@@ -89,6 +89,40 @@ class MpAdminTest(unittest.TestCase):
         self.mod.own_char("camp", "Mira", "Lyra")
         self.assertIsNotNone(self.mod._collision_warning(self.mod.load_ownership("camp")))
 
+    # ── Defensive / edge cases (PR3 review) ──────────────────────────────────
+
+    def test_malformed_ownership_subtypes_coerced(self):
+        (self.camp / "ownership.json").write_text('{"devices": "notadict", "characters": null}')
+        data = self.mod.load_ownership("camp")
+        self.assertEqual(data["devices"], {})
+        self.assertEqual(data["characters"], {})
+        # and the writers don't crash on the recovered structure
+        self.mod.own_device("camp", "dev-1", "alice")
+        self.mod.own_char("camp", "alice", "Mira")
+
+    def test_hash_in_dm_name_rejected(self):
+        with self.assertRaises(SystemExit):
+            self.mod.set_dm("camp", "bob#1234")
+
+    def test_hash_in_owner_name_rejected(self):
+        with self.assertRaises(SystemExit):
+            self.mod.own_char("camp", "bob#1", "Mira")
+        with self.assertRaises(SystemExit):
+            self.mod.own_device("camp", "dev-1", "bob#1")
+
+    def test_empty_device_id_rejected(self):
+        with self.assertRaises(SystemExit):
+            self.mod.own_device("camp", "", "alice")
+
+    def test_set_dm_removes_stale_duplicates(self):
+        # Two pre-existing dm: lines; set_dm must leave exactly one.
+        self.camp.joinpath("state.md").write_text(
+            "## Session Flags\n- dm: alice\n- dm: stale\n\n## DM Notes\n")
+        self.mod.set_dm("camp", "carol")
+        flags = (self.camp / "state.md").read_text().split("## DM Notes")[0]
+        self.assertEqual(flags.count("dm:"), 1)
+        self.assertEqual(self.mod.get_dm("camp"), "carol")
+
 
 class WritePathMatchesServerReadTest(unittest.TestCase):
     """Round-trip: mp_admin writes dm:, the server's _session_dm reads it back —

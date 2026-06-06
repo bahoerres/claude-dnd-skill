@@ -55,6 +55,16 @@ def _atomic_write(path: str, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _check_user(name: str) -> None:
+    """A user name may end up as the state.md `dm:` value, which is read through
+    a comment-stripping regex — a '#' would silently truncate it (and demote the
+    real DM to player). Reject it at the write boundary."""
+    if not name or not name.strip():
+        raise SystemExit("name may not be empty")
+    if "#" in name:
+        raise SystemExit("name may not contain '#' (conflicts with the state.md comment syntax)")
+
+
 # ─── ownership.json ──────────────────────────────────────────────────────────
 
 def load_ownership(name: str) -> dict:
@@ -65,8 +75,11 @@ def load_ownership(name: str) -> dict:
         data = {}
     if not isinstance(data, dict):
         data = {}
-    data.setdefault("devices", {})
-    data.setdefault("characters", {})
+    # Coerce existing-but-malformed sub-values too (setdefault won't fix those).
+    if not isinstance(data.get("devices"), dict):
+        data["devices"] = {}
+    if not isinstance(data.get("characters"), dict):
+        data["characters"] = {}
     return data
 
 
@@ -88,6 +101,9 @@ def _collision_warning(data: dict) -> "str | None":
 
 
 def own_device(name: str, device_id: str, user: str) -> None:
+    _check_user(user)
+    if not device_id or not device_id.strip():
+        raise SystemExit("device id may not be empty")
     data = load_ownership(name)
     data["devices"][device_id] = user
     save_ownership(name, data)
@@ -97,6 +113,7 @@ def own_device(name: str, device_id: str, user: str) -> None:
 
 
 def own_char(name: str, user: str, character: str) -> None:
+    _check_user(user)
     data = load_ownership(name)
     chars = data["characters"].setdefault(user, [])
     if character not in chars:
@@ -144,19 +161,18 @@ def get_dm(name: str) -> "str | None":
 
 
 def set_dm(name: str, who: str) -> None:
+    _check_user(who)
     with open(_state_path(name)) as f:
         lines = f.read().splitlines()
     rng = _session_flags_range(lines)
     if rng is None:
         raise SystemExit("state.md has no '## Session Flags' section — cannot assign DM")
     start, end = rng
-    new_line = f"- dm: {who}"
-    for j in range(start + 1, end):
-        if _DM_LINE_RE.match(lines[j]):
-            lines[j] = new_line
-            break
-    else:
-        lines.insert(start + 1, new_line)
+    # Drop ALL existing dm: lines in the section (no stale duplicates), then
+    # insert the new assignment right after the header.
+    section = [ln for ln in lines[start + 1:end] if not _DM_LINE_RE.match(ln)]
+    section.insert(0, f"- dm: {who}")
+    lines = lines[:start + 1] + section + lines[end:]
     _atomic_write(_state_path(name), "\n".join(lines) + "\n")
 
 

@@ -111,6 +111,18 @@ class ChunkChannelTagTest(unittest.TestCase):
         self.client.post("/chunk", json={"text": "narration", "audience": "   "})
         self.assertEqual(self._last().get("channel"), "public")
 
+    def test_audience_all_normalized_to_public_channel(self):
+        # "all" means public; the stored channel must be "public" so replay
+        # treats it as visible-to-all (not as a private channel named "all").
+        self.client.post("/chunk", json={"text": "the gate opens", "audience": "all"})
+        self.assertEqual(self._last().get("channel"), "public")
+
+    def test_reserved_audience_case_insensitive(self):
+        self.client.post("/chunk", json={"text": "hidden roll", "audience": "DM"})
+        self.assertEqual(self._last().get("channel"), "dm")
+        self.client.post("/chunk", json={"text": "open scene", "audience": "Public"})
+        self.assertEqual(self._last().get("channel"), "public")
+
     def test_typed_narration_branches_tagged(self):
         for flag, val in (("npc", "Osk"), ("dice", True), ("action", "kick door"), ("tutor", True)):
             self.mod._text_log.clear()

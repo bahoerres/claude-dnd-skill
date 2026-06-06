@@ -1167,9 +1167,10 @@ def _audience_arg(value):
     if not isinstance(value, str):
         return "all"
     v = value.strip()
-    if not v or v in ("all", "public"):
+    vl = v.lower()
+    if not v or vl in ("all", "public"):
         return "all"
-    if v == "dm":
+    if vl == "dm":
         return "dm"
     return {v}
 
@@ -1344,6 +1345,12 @@ def chunk():
     # private (e.g. dm-channel) line never replays to a player who shouldn't see it.
     _aud = data.get("audience")
     audience_tag = _aud.strip() if isinstance(_aud, str) and _aud.strip() else "public"
+    # Normalise reserved tokens (case-insensitive); "all" is public for replay.
+    _audl = audience_tag.lower()
+    if _audl in ("all", "public"):
+        audience_tag = "public"
+    elif _audl == "dm":
+        audience_tag = "dm"
     raw = data.get("text", "")
     if not raw:
         return "", 204

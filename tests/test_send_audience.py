@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import queue
 import sys
 import unittest
@@ -55,6 +56,11 @@ class AudienceArgTest(unittest.TestCase):
     def test_non_string_maps_to_all(self):
         self.assertEqual(self.app._audience_arg({"x": 1}), "all")
 
+    def test_reserved_tokens_case_insensitive(self):
+        self.assertEqual(self.app._audience_arg("DM"), "dm")
+        self.assertEqual(self.app._audience_arg("Public"), "all")
+        self.assertEqual(self.app._audience_arg("ALL"), "all")
+
 
 # ─── /chunk live broadcast is routed by audience ─────────────────────────────
 
@@ -95,6 +101,62 @@ class ChunkLiveRoutingTest(unittest.TestCase):
         self.client.post("/chunk", json={"text": "you alone spot it", "audience": "Aldric"})
         self.assertTrue(any(p.get("text") == "you alone spot it" for p in [qbob.get_nowait() for _ in range(qbob.qsize())]))
         self.assertTrue(qcar.empty())
+
+    def test_award_blocks_routed_by_audience(self):
+        """All four /chunk paths route by audience — a dm-whispered award block
+        does not reach a player (the inspiration/xp/milestone branches)."""
+        award_keys = {"inspiration_award", "xp_award", "milestone_award"}
+        for body in (
+            {"inspiration_award": "Aldric", "text": "Aldric", "audience": "dm"},
+            {"xp_award": {"summary": "+100"}, "text": "+100", "audience": "dm"},
+            {"milestone_award": "Hero", "label": "Deed", "text": "Hero", "audience": "dm"},
+        ):
+            with self.mod._clients_lock:
+                self.mod._clients.clear()
+            qdm = self._add("alice", "dm", [])
+            qpl = self._add("bob", "player", ["Aldric"])
+            self.client.post("/chunk", json=body)
+            dm_payloads = [qdm.get_nowait() for _ in range(qdm.qsize())]
+            pl_payloads = [qpl.get_nowait() for _ in range(qpl.qsize())]
+            self.assertTrue(any(award_keys & set(p) for p in dm_payloads), f"DM missed award: {body}")
+            self.assertFalse(any(award_keys & set(p) for p in pl_payloads), f"award leaked to player: {body}")
+
+
+class SendAwardAudienceTest(unittest.TestCase):
+    """send.py must attach --audience to the award bodies, not just narration."""
+
+    def setUp(self):
+        self.send = _load(DISPLAY / "send.py", "send_award_under_test")
+        self.posts = []
+        self.send._read_token = lambda: "tok"
+
+        def _capture(url, data, token):
+            self.posts.append((url, json.loads(data.decode())))
+            return True
+        self.send._post = _capture
+
+    def _chunk_bodies(self):
+        return [b for (u, b) in self.posts if u.endswith("/chunk")]
+
+    def test_inspiration_award_carries_audience(self):
+        self.send.main(["--audience", "dm", "--inspiration-award", "Aldric"])
+        insp = [b for b in self._chunk_bodies() if "inspiration_award" in b]
+        self.assertTrue(insp and insp[0].get("audience") == "dm")
+
+    def test_xp_award_carries_audience(self):
+        self.send.main(["--audience", "dm", "--xp-award", '{"summary":"+100"}'])
+        xp = [b for b in self._chunk_bodies() if "xp_award" in b]
+        self.assertTrue(xp and xp[0].get("audience") == "dm")
+
+    def test_milestone_award_carries_audience(self):
+        self.send.main(["--audience", "dm", "--milestone-award", "Hero", "--milestone-label", "Deed"])
+        ms = [b for b in self._chunk_bodies() if "milestone_award" in b]
+        self.assertTrue(ms and ms[0].get("audience") == "dm")
+
+    def test_no_audience_means_no_key(self):
+        self.send.main(["--inspiration-award", "Aldric"])
+        insp = [b for b in self._chunk_bodies() if "inspiration_award" in b]
+        self.assertTrue(insp and "audience" not in insp[0])
 
 
 if __name__ == "__main__":

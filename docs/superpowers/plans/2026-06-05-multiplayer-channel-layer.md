@@ -1063,6 +1063,25 @@ This is the "real second prompt regime" (`multiplayer-design.md` → *Assistant 
 
 ---
 
+## PR1 review outcomes (2026-06-05)
+
+PR1 (Tasks 1–3) shipped on branch `feat/multiplayer-channel-layer`, then went through a 5-dimension adversarial review (28 agents, 23 findings). Hardening applied in commit `harden(display): … from PR1 adversarial review`:
+
+**Fixed in PR1:**
+- **Security — X-Remote-User trust.** Now gated on `DND_FORWARD_AUTH` + a `DND_TRUSTED_PROXIES` source-address allowlist; localhost→DM convenience disabled under forward-auth. (The header was trusted unconditionally — any LAN client could claim DM.)
+- **`_session_dm` scoping.** Reads only the `## Session Flags` section and stops the value at a newline / inline `#` comment. (File-wide greedy match let `## DM Notes` prose or trailing comments activate multiplayer with a junk DM name.)
+- **`_owned_characters` coercion.** Non-list values → empty set (string no longer explodes to letters; null no longer crashes `/stream`).
+- **`_visible_to` audience guard.** Bare-string and `None` audiences handled safely.
+- **`_broadcast` perf.** `_mp_active()` resolved once, outside `_clients_lock` (was N per-client `state.md` reads per broadcast, under the lock).
+- **Tests +21**, including an end-to-end `/stream` seam test with no `_mp_active` monkeypatch.
+
+**Deferred (carry into the noted PR):**
+- **mtime-cache the `dm:` read** (perf micro-opt) — optional; the N-multiplication is already gone. Revisit only if autorun profiling shows it.
+- **Exact-case `dm:` vs `ownership.json` username matching** — a casing mismatch silently demotes the DM. Decide normalization policy when **PR3** adds the `/dnd dm` / `/dnd own` write path (validate at write time).
+- **User vs. character audience namespace separation** — a per-character whisper can leak to a same-named user (and vice-versa). Only reachable once **PR3**'s `--audience <name>` plumbing lands; fix there by tagging audiences (`user:` / `char:`) rather than merging the namespace.
+
+---
+
 ## Execution handoff
 
 **Plan complete and saved to `docs/superpowers/plans/2026-06-05-multiplayer-channel-layer.md`.**

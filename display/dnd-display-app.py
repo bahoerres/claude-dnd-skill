@@ -244,6 +244,98 @@ def _device_ok(device_id: str, ip: str) -> str:
     return "pending"
 
 
+# ─── Channel / audience layer: identity + ownership ──────────────────────────
+# Private filtering is OPT-IN. It engages only when a DM is assigned for the
+# session (the `dm:` flag in state.md). With no DM assigned, _mp_active() is
+# False and the server behaves exactly like the single-broadcast original.
+
+def _campaign_dir():
+    """Resolve the current campaign directory via the canonical paths helper."""
+    try:
+        with open(CAMP_FILE) as _fh:
+            name = _fh.read().strip()
+    except Exception:
+        return None
+    if not name:
+        return None
+    try:
+        return _find_campaign(name)
+    except Exception:
+        return None
+
+
+def _ownership() -> dict:
+    """Per-campaign device->user and user->characters map. Missing file = empty."""
+    cdir = _campaign_dir()
+    if cdir is None:
+        return {"devices": {}, "characters": {}}
+    try:
+        with open(os.path.join(str(cdir), "ownership.json")) as fh:
+            data = json.load(fh)
+    except Exception:
+        return {"devices": {}, "characters": {}}
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("devices", {})
+    data.setdefault("characters", {})
+    return data
+
+
+def _device_user_map() -> dict:
+    return _ownership()["devices"]
+
+
+def _owned_characters(user) -> set:
+    if not user:
+        return set()
+    return set(_ownership()["characters"].get(user, []))
+
+
+def _session_dm():
+    """Read the `dm:` assignment from state.md Session Flags. None = no DM."""
+    cdir = _campaign_dir()
+    if cdir is None:
+        return None
+    try:
+        with open(os.path.join(str(cdir), "state.md")) as _fh:
+            text = _fh.read()
+    except Exception:
+        return None
+    m = re.search(r"(?mi)^\s*[-*]?\s*dm:\s*(.+?)\s*$", text)
+    if not m:
+        return None
+    return m.group(1).strip() or None
+
+
+def _mp_active() -> bool:
+    """Private filtering engages only when a DM is assigned for the session."""
+    return _session_dm() is not None
+
+
+def _resolve_identity(req) -> dict:
+    """Resolve the identity of an SSE connection.
+
+    Upgrade path: a trusted X-Remote-User header injected by a forward-auth
+    proxy (only trusted when such a proxy is the sole ingress). v1 path: the
+    device UUID the browser stores in localStorage, passed on the EventSource
+    URL as ?device=.
+    """
+    user = req.headers.get("X-Remote-User")
+    device_id = req.args.get("device") or ""
+    if not user:
+        user = _device_user_map().get(device_id)
+    dm = _session_dm()
+    role = "dm" if (user and user == dm) else "player"
+    # Backward-compat: the local host machine running the server is the trusted
+    # operator. When nothing maps it and it connects from localhost, treat it as
+    # DM so the host screen keeps seeing everything. Explicit mapping overrides.
+    remote = req.remote_addr or ""
+    if user is None and remote in ("127.0.0.1", "::1"):
+        role = "dm"
+    return {"user": user, "device": device_id, "role": role,
+            "chars": _owned_characters(user)}
+
+
 # ─── Staged input system ──────────────────────────────────────────────────────
 # Players stage their actions from the display companion UI. When all expected
 # players mark ready, the combined action is written to TRIGGER_FILE for

@@ -1157,6 +1157,18 @@ def _visible_to(client, audience, mp_active=None) -> bool:
     return bool(client["chars"] & aud) or client["user"] in aud
 
 
+def _entry_visible(entry, ident, mp_active=None) -> bool:
+    # Replay-log filter: mirrors _visible_to but reads each entry's channel tag.
+    if mp_active is None:
+        mp_active = _mp_active()
+    if not mp_active:
+        return True
+    ch = entry.get("channel", "public")
+    if ch == "public" or ident["role"] == "dm":
+        return True
+    return ch == ident["user"] or ch in ident["chars"]
+
+
 # ─── Routes ──────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -1260,6 +1272,10 @@ def chunk():
     if not _token_ok():
         return "Forbidden", 403
     data = request.get_json(silent=True) or {}
+    # Channel tag for the stored replay entry: "public" (default) | "dm" | a
+    # character/user name. Lets _entry_visible filter the on-connect replay so a
+    # private (e.g. dm-channel) line never replays to a player who shouldn't see it.
+    audience_tag = str(data.get("audience") or "public").strip() or "public"
     raw = data.get("text", "")
     if not raw:
         return "", 204
@@ -1289,6 +1305,7 @@ def chunk():
         if is_milestone_award and data.get("reason"):
             payload["reason"] = str(data["reason"]).strip()[:240]
             log_entry["reason"] = payload["reason"]
+        log_entry["channel"] = audience_tag
         with _text_log_lock:
             _text_log.append(log_entry)
         with _tail_lock:
@@ -1309,6 +1326,7 @@ def chunk():
         if reason:
             payload["reason"] = reason
             log_entry["reason"] = reason
+        log_entry["channel"] = audience_tag
         with _text_log_lock:
             _text_log.append(log_entry)
         with _tail_lock:
@@ -1337,6 +1355,7 @@ def chunk():
             return "", 204
         payload = {"xp_award": xp_data, "text": xp_data.get("summary", "")}
         log_entry = {"xp_award": xp_data, "text": xp_data.get("summary", "")}
+        log_entry["channel"] = audience_tag
         with _text_log_lock:
             _text_log.append(log_entry)
         with _tail_lock:
@@ -1387,6 +1406,7 @@ def chunk():
         log_entry["dice"] = True
     elif is_tutor:
         log_entry["tutor"] = True
+    log_entry["channel"] = audience_tag
 
     # Stamp campaign on tail entries to prevent bleed when switching campaigns
     try:

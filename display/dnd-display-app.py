@@ -1166,7 +1166,57 @@ def _entry_visible(entry, ident, mp_active=None) -> bool:
     ch = entry.get("channel", "public")
     if ch == "public" or ident["role"] == "dm":
         return True
+    if ch == "dm":
+        return False                         # reserved DM token: real DMs admitted above
     return ch == ident["user"] or ch in ident["chars"]
+
+
+# Fields of a player's stat entry that are legitimately shared at the table (the
+# sidebar party summary). Everything else (sheet, inventory, spell_slots, effects,
+# conditions, hit_dice, ...) is private to the owner. Adjust this set to widen or
+# narrow what the shared panel exposes — it is the public-field policy seam.
+_PUBLIC_STAT_FIELDS = ("name", "race", "class", "level", "hp")
+
+
+def _scope_stats(stats, ident) -> dict:
+    """DM (or filtering off): the full blob. A player: their own characters in
+    full + a public summary (_PUBLIC_STAT_FIELDS) of everyone else, so the party
+    panel still works without leaking another player's sheet."""
+    if not _mp_active() or ident.get("role") == "dm":
+        return stats
+    players = stats.get("players")
+    if not isinstance(players, list):
+        return stats
+    chars = ident.get("chars") or set()
+    scoped = []
+    for p in players:
+        if not isinstance(p, dict):
+            scoped.append(p)
+        elif p.get("name") in chars:
+            scoped.append(p)                                  # own character: full
+        else:
+            scoped.append({k: p[k] for k in _PUBLIC_STAT_FIELDS if k in p})
+    out = dict(stats)
+    out["players"] = scoped
+    return out
+
+
+def _broadcast_stats(current: dict) -> None:
+    """Broadcast a stats payload, scoped per connection when filtering is on.
+    Falls back to a plain broadcast when no DM is assigned (byte-for-byte
+    backward-compat). Client records double as the identity for _scope_stats."""
+    if not _mp_active():
+        _broadcast({"stats": current})
+        return
+    with _clients_lock:
+        dead = []
+        for c in _clients:
+            try:
+                c["q"].put_nowait({"stats": _scope_stats(current, c)})
+            except queue.Full:
+                dead.append(c)
+        for c in dead:
+            _clients.remove(c)
 
 
 # ─── Routes ──────────────────────────────────────────────────────────────────
@@ -1275,7 +1325,8 @@ def chunk():
     # Channel tag for the stored replay entry: "public" (default) | "dm" | a
     # character/user name. Lets _entry_visible filter the on-connect replay so a
     # private (e.g. dm-channel) line never replays to a player who shouldn't see it.
-    audience_tag = str(data.get("audience") or "public").strip() or "public"
+    _aud = data.get("audience")
+    audience_tag = _aud.strip() if isinstance(_aud, str) and _aud.strip() else "public"
     raw = data.get("text", "")
     if not raw:
         return "", 204
@@ -1346,7 +1397,7 @@ def chunk():
                 stats_snapshot = dict(_current_stats)
         if stats_snapshot is not None:
             _persist_stats()
-            _broadcast({"stats": stats_snapshot})
+            _broadcast_stats(stats_snapshot)
         return "", 204
 
     if is_xp_award:
@@ -1687,7 +1738,7 @@ def stats():
             current = dict(_current_stats)
 
     _persist_stats()
-    _broadcast({"stats": current})
+    _broadcast_stats(current)
     # Broadcast any round-based effect expiries after the stats update
     for evt in _effect_expire_events:
         _broadcast({"effect_expired": evt})
@@ -1736,7 +1787,7 @@ def effects_expire():
 
     if expire_evt:
         _broadcast({"effect_expired": expire_evt})
-    _broadcast({"stats": current})
+    _broadcast_stats(current)
     _persist_stats()
     return "", 204
 
@@ -1874,6 +1925,10 @@ def device_approve():
     """DM approves a pending device. Body: {"id": "<device_id>"}"""
     if not _token_ok():
         return "Forbidden", 403
+    # TODO(PR3): write-path authz. PR2 hides the request card from players, but
+    # the shared LAN token still lets any browser POST an approval (confused
+    # deputy). When a DM is assigned, require role==dm here — resolve identity
+    # from the X-DND-Device header. Natural home is the /dnd dm role work.
     device_id = str((request.get_json(force=True, silent=True) or {}).get("id", ""))
     with _devices_lock:
         _pending_devices.pop(device_id, None)
@@ -1889,6 +1944,8 @@ def device_deny():
     """DM denies a pending device. Body: {"id": "<device_id>"}"""
     if not _token_ok():
         return "Forbidden", 403
+    # TODO(PR3): write-path authz — see /device/approve. Require role==dm when a
+    # DM is assigned; the shared token alone is not DM-distinguishing.
     device_id = str((request.get_json(force=True, silent=True) or {}).get("id", ""))
     with _devices_lock:
         _pending_devices.pop(device_id, None)
@@ -2109,14 +2166,14 @@ def drain_player_input():
 def _catchup_payloads(ident) -> list:
     """On-connect catch-up payloads for a freshly connected client, identity-scoped.
 
-    Mirrors the prior inline /stream block. PR2 scoping closes the DM-private
-    leak surface: the replay log is filtered by channel tag, and device-approval
-    requests are DM-only (everyone when filtering is off — backward-compat).
+    Mirrors the prior inline /stream block. PR2 scoping closes the leak surface:
+    the replay log is filtered by channel tag, device-approval requests are
+    DM-only, and stats are scoped per identity (own sheet full, others summary).
 
-    Stats / staged inputs / pending / queue remain full for now: per-player view
-    privacy for those is a deferred product decision (they are player-shared
-    table data, not secret DM data) and a consistent scope needs per-audience
-    LIVE sends, not just catch-up filtering. See the channel-layer plan.
+    Staged inputs / pending / queue remain full for now: those are table-
+    coordination signals (whose turn, who is ready) without a clean per-row owner
+    and are entangled with the deferred combat-UX open item — not secret data.
+    Everything short-circuits to full when no DM is assigned (backward-compat).
     """
     active = _mp_active()
     out: list = []
@@ -2130,10 +2187,10 @@ def _catchup_payloads(ident) -> list:
     if recent:
         out.append({"replay_batch": recent})
 
-    # Stats — full party (per-player view privacy deferred).
+    # Stats — DM/own full, other players summarised (per-connection view privacy).
     with _stats_lock:
         if _current_stats:
-            out.append({"stats": dict(_current_stats)})
+            out.append({"stats": _scope_stats(dict(_current_stats), ident)})
 
     # Pending input — full (deferred).
     with _input_lock:

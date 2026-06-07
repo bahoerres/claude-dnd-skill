@@ -142,6 +142,18 @@ class DmInputRouteTest(DmInputTestBase):
         self.assertEqual(r.status_code, 400)
         self.assertFalse(self.qfile.exists())
 
+    def test_smart_punctuation_transliterated(self):
+        self._set_dm("alice")
+        self._post("’don’t — the “Black Network”", device="dev-alice")
+        self.assertEqual(
+            self.qfile.read_text(),
+            '[DM]: \'don\'t -- the "Black Network"')
+
+    def test_multiline_collapses_to_spaces(self):
+        self._set_dm("alice")
+        self._post("line one\nline two", device="dev-alice")
+        self.assertEqual(self.qfile.read_text(), "[DM]: line one line two")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1966,7 +1966,16 @@ def dm_input():
         return "Forbidden", 403
 
     data = request.get_json(force=True, silent=True) or {}
-    text = _sanitize_input(str(data.get("text", "")))
+    raw = str(data.get("text", ""))
+    # DM input is prose: transliterate common smart punctuation to ASCII and
+    # collapse whitespace/newlines to single spaces BEFORE the printable
+    # filter deletes them (fusing words / eating apostrophes).
+    for uni, asc in (("‘", "'"), ("’", "'"), ("“", '"'),
+                     ("”", '"'), ("—", " -- "), ("–", "-"),
+                     ("…", "...")):
+        raw = raw.replace(uni, asc)
+    raw = " ".join(raw.split())
+    text = _sanitize_input(raw)
     if not text:
         return "Bad Request", 400
 

@@ -4119,6 +4119,7 @@ const _dmSend   = document.getElementById('dm-input-send');
 const _dmStatus = document.getElementById('dm-input-status');
 
 async function _sendDmInput() {
+  if (_dmSend.disabled) return;
   const text = _dmText.value.trim();
   if (!text) return;
   _dmSend.disabled = true;

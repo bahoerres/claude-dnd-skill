@@ -183,7 +183,10 @@ class CatchupPayloadsTest(unittest.TestCase):
 
     def test_scene_is_first_payload(self):
         out = self.mod._catchup_payloads(_ident("bob", "player", []))
-        self.assertEqual(self._kinds(out)[0], "scene")
+        kinds = self._kinds(out)
+        # `you` identity event now leads; scene is second
+        self.assertEqual(kinds[0], "you")
+        self.assertEqual(kinds[1], "scene")
 
     def test_catchup_order_matches_inline_contract(self):
         """Refactor parity: every surface populated -> kinds appear in the same
@@ -196,7 +199,7 @@ class CatchupPayloadsTest(unittest.TestCase):
         self.mod._autorun_threshold = 2
         out = self.mod._catchup_payloads(_ident("alice", "dm", []))
         self.assertEqual(self._kinds(out), [
-            "scene", "replay_batch", "stats", "pending_input", "staged_inputs",
+            "you", "scene", "replay_batch", "stats", "pending_input", "staged_inputs",
             "queue_status", "autorun_cycle", "autorun_threshold", "device_request",
         ])
 

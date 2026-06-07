@@ -2202,7 +2202,11 @@ def _catchup_payloads(ident) -> list:
     active = _mp_active()
     out: list = []
 
-    # Scene — public; first so the browser starts on the right background.
+    # Who-am-I — first, so the browser can gate DM-only UI (dm-input bar)
+    # before any other render. Harmless extra key for old clients.
+    out.append({"you": {"role": ident["role"], "user": ident["user"]}})
+
+    # Scene — public; second so the browser starts on the right background.
     out.append({"scene": SCENES[_current_scene_name] | {"name": _current_scene_name}})
 
     # Replay recent entries (typed batch) — filtered by each entry's channel tag.

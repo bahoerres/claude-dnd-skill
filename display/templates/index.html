@@ -1476,6 +1476,45 @@
   #dm-help-btn.locked { color: rgba(180,90,60,0.85); border-color: rgba(180,90,60,0.5); }
   #dm-help-btn:disabled { pointer-events: none; }
 
+  /* ── DM input bar (assistant mode — visible only to the dm role) ── */
+  #dm-input-bar {
+    display: none;            /* shown via JS when you.role === 'dm' */
+    position: fixed;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(680px, 80vw);
+    gap: 8px;
+    align-items: center;
+    z-index: 60;
+    background: rgba(20, 14, 6, 0.92);
+    border: 1px solid rgba(180, 140, 60, 0.45);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  #dm-input-text {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: rgba(230, 215, 180, 0.95);
+    font: inherit;
+  }
+  #dm-input-send {
+    color: rgba(220, 185, 100, 1);
+    background: none;
+    border: 1px solid rgba(210, 170, 80, 0.6);
+    border-radius: 6px;
+    padding: 4px 12px;
+    cursor: pointer;
+    font: inherit;
+  }
+  #dm-input-status {
+    font-size: 0.8em;
+    color: rgba(180, 140, 60, 0.8);
+    white-space: nowrap;
+  }
+
   /* ── Device approval cards ── */
   #device-approvals {
     position: fixed;
@@ -1694,6 +1733,14 @@
 
 <!-- DM Help — on-demand hint button -->
 <button id="dm-help-btn" title="Request a DM hint for the current scene">◈ DM Help</button>
+
+<!-- DM input bar — private lane to Claude, visible only when you.role === 'dm' -->
+<div id="dm-input-bar">
+  <input id="dm-input-text" type="text" autocomplete="off"
+         placeholder="DM → Claude (players never see this)…" />
+  <span id="dm-input-status"></span>
+  <button id="dm-input-send" title="Send privately to Claude">Send</button>
+</div>
 
 <!-- Device approval cards — shown when a new LAN device requests input access -->
 <div id="device-approvals"></div>
@@ -4064,6 +4111,41 @@ function _authHeaders() {
   };
 }
 
+// ── DM input bar (assistant mode) ──────────────────────────────────────────
+let _myRole = 'player';
+const _dmBar    = document.getElementById('dm-input-bar');
+const _dmText   = document.getElementById('dm-input-text');
+const _dmSend   = document.getElementById('dm-input-send');
+const _dmStatus = document.getElementById('dm-input-status');
+
+async function _sendDmInput() {
+  const text = _dmText.value.trim();
+  if (!text) return;
+  _dmSend.disabled = true;
+  _dmStatus.textContent = '…';
+  try {
+    const res = await fetch('/dm-input', {
+      method: 'POST',
+      headers: _authHeaders(),
+      body: JSON.stringify({ text }),
+    });
+    if (res.ok) {
+      _dmText.value = '';
+      _dmStatus.textContent = '✓ delivered';
+    } else {
+      _dmStatus.textContent = `✗ ${res.status}`;
+    }
+  } catch (_) {
+    _dmStatus.textContent = '✗ offline';
+  }
+  _dmSend.disabled = false;
+  _dmText.focus();
+}
+_dmSend.addEventListener('click', _sendDmInput);
+_dmText.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); _sendDmInput(); }
+});
+
 let _actx   = null;
 let _sfxCache = {};
 
@@ -4643,6 +4725,14 @@ function connect() {
     let payload;
     try { payload = JSON.parse(e.data); } catch { return; }
 
+    if (payload.you) {
+      _myRole = payload.you.role;
+      _dmBar.style.display = (_myRole === 'dm') ? 'flex' : 'none';
+    }
+    if (payload.dm_input) {
+      // Echo from the dm channel (covers a second DM-role screen, e.g. host)
+      _dmStatus.textContent = '✓ delivered';
+    }
     if (payload.stats) {
       updateStats(payload.stats);
       if (payload.stats.players && payload.stats.players.length > 0) {

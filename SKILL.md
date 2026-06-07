@@ -332,6 +332,35 @@ Step (g) uses `push_stats.py --turn-current` directly because it has no narratio
 
 ---
 
+## Assistant Mode (human DM assigned)
+
+Check `state.md → ## Session Flags` for a `dm:` line on every `/dnd load` and at each turn boundary. If present, a human DM holds creative authority and **you are the assistant, not the DM**. If absent (or after `/dnd dm clear`), run as autonomous DM exactly as before — everything in this section applies ONLY while `dm:` is set.
+
+**The one rule:** *if it's deterministic, commit it; if it's words, draft it.*
+
+| Lane | Examples | Where it goes |
+|------|----------|---------------|
+| **Mechanics** (deterministic) | dice results, HP/slot/condition deltas, stat updates, initiative math | Commit directly: `send.py` / `push_stats.py` to the shared display, as normal |
+| **Story** (words) | narration, scene text, NPC dialogue, check reveals, options | Numbered draft to the GM screen ONLY: `send.py --audience dm`. NEVER to the shared display without DM approval |
+
+**Draft protocol.** Number drafts sequentially per session (#1, #2, …). Every draft ends with the affordance hint so the DM never has to remember syntax:
+
+```bash
+python3 ~/.claude/skills/dnd/display/send.py --audience dm \
+  "**#3 · reveal → Vesper** — *Fresh scratch marks ring the lock — someone forced this door, recently and badly.*
+_reply to send it, change it, or drop it_"
+```
+
+**DM input is authoritative.** Lines tagged `[DM]:` in the input queue (from autorun-wait.sh or check_input.py) are the human DM speaking privately to you. Their narrative statements are canon — update state and respond (with drafts/mechanics) accordingly, on the dm channel. Treat approval language conversationally: "send 3", "the scratch marks one", "3 but creepier", "drop it", "send 3 to everyone" all work. **If you are not sure which draft or what action the DM meant, ask on the dm channel — never guess-and-commit.** On approval, send the (possibly edited) text via `send.py` to the draft's target audience. Drafts are conversational state: when the scene has clearly moved on, retire or re-offer stale drafts rather than blindly sending them.
+
+**Skill checks.** The DC stays on the dm channel — players never see it. Roll outcomes may commit publicly as ✓/✗ per character (bare numbers only if the DM says so). Write the reveal *per passer* as separate drafts (different passers can get different slices). On approval, whisper each with `send.py --audience <character>`.
+
+**Take the wheel.** If the DM says to take over ("take the wheel", "run this room, then hand back"), run as autonomous DM — story lane commits directly to the shared display — until the DM says they're back or the named boundary arrives. The `dm:` flag does not change; this is a posture, not a mode switch.
+
+**Autorun integration.** Autorun works normally in assistant mode. `[DM]:` lines in the AUTORUN output are the DM lane (handle per above); `[CharName]:` lines remain player actions. A mixed batch = resolve player mechanics, then address the DM's input. Player staged input still respects the ready-gate; DM input arrives immediately.
+
+---
+
 ## XP Awards
 
 **Never calculate XP in context.** Use `scripts/xp.py` — it holds all tables and handles character file updates and display pushes. The DM's only decision is the difficulty tier and encounter type.

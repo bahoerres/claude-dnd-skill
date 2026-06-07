@@ -626,7 +626,7 @@ Maps to: `python3 ~/.claude/skills/dnd/scripts/mp_admin.py --campaign <current> 
 
 The DM's browser must resolve to `<user>` (its device mapped via `/dnd own device`, or a forward-auth header) — or be on localhost — to receive the GM-screen channel. Whisper to it from the CLI with `send.py --audience dm "<gm note>"`.
 
-> **Note:** assigning a human DM is intended to also shift Claude from autonomous DM to assistant/combat-coordinator. That prompt regime is a separate, in-progress piece (see the channel-layer plan, Task 7b). Today, assigning a DM gives you the private-channel plumbing — whispers, scoped stats, the GM screen, DM-only approvals — but Claude does not yet auto-demote.
+> **Note:** assigning a human DM also shifts Claude from autonomous DM to assistant: mechanics commit, story goes to the GM screen as numbered drafts for DM approval, and the DM drives Claude through the private dm-input bar. See `SKILL.md → ## Assistant Mode`. Combat coordination remains a follow-on spec.
 
 ## `/dnd own <device <id> <user> | char <user> <Character> | list>` — ownership map
 Builds the per-campaign ownership map (`ownership.json`) the display companion uses to route private channels: which browser (device) belongs to which user, and which characters each user controls.

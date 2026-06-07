@@ -1034,7 +1034,7 @@ This is the "real second prompt regime" (`multiplayer-design.md` → *Assistant 
 | 1 | 1–3 | Identity + tagged registry + audience-aware broadcast | Low — defaults preserve behavior |
 | 2 | 4–5 | Leak closure (the security-meaningful part) | Medium — touches `/stream` flood + `/chunk`; verify staged/queue shapes |
 | 3 | 6, 7a | `--audience` routing + DM-assignment commands | Low |
-| (later) | 7b | Assistant-mode prompt regime | Gated on a real session |
+| (later) | 7b | Assistant-mode prompt regime | Shipped — see 2026-06-06-assistant-mode-implementation.md |
 
 ---
 

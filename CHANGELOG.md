@@ -10,6 +10,11 @@ Versions before **1.6.0** are reconstructed retroactively from git history; the 
 
 ## [Unreleased]
 
+- Assistant mode (Task 7b): with a human DM assigned, Claude demotes to
+  compute-and-propose — mechanics commit, story drafts to the GM screen for
+  conversational approval. New `/dm-input` route + DM-only input bar give a
+  browser-only DM a private lane that fires Claude's turn immediately.
+
 ## [1.8.0] — 2026-05-08 — D&D 5e 2024 (SRD 5.2) ruleset support
 
 The skill now supports both **2014 (SRD 5.1)** and **2024 (SRD 5.2)**, declared per campaign on the `state.md` header line. **2014 stays the default** — nothing about an existing campaign changes unless the DM opts in. Routing happens at every `/dnd load` via `paths.campaign_ruleset()`. A backwards-compat migrator handles legacy campaigns with a one-time prompt and a timestamped backup before any write.

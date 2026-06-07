@@ -1944,6 +1944,47 @@ def player_input():
     return "", 204
 
 
+@app.route("/dm-input", methods=["POST"])
+def dm_input():
+    """Private DM→Claude input lane (assistant mode — channel-layer Task 7b).
+
+    Body: {"text": "..."}. Only the assigned DM may post (same write-path
+    authz pattern as /device/approve). The line is appended to .input_queue
+    tagged `[DM]:` — in autorun, autorun-wait.sh polls that file every 0.3s,
+    so DM input fires Claude's turn immediately WITHOUT touching the staged
+    ready-gate (_staged is never read or swept here). Echo goes to the dm
+    channel only; players see nothing.
+    """
+    if not _token_ok():
+        return "Forbidden", 403
+    if not _rate_ok(request.remote_addr):
+        return "Too Many Requests", 429
+    # Meaningless outside multiplayer; role check covers the localhost-host
+    # convenience (a direct localhost browser with no mapping is the trusted
+    # operator and may post once a DM is assigned).
+    if not _mp_active() or _resolve_identity(request)["role"] != "dm":
+        return "Forbidden", 403
+
+    data = request.get_json(force=True, silent=True) or {}
+    text = _sanitize_input(str(data.get("text", "")))
+    if not text:
+        return "Bad Request", 400
+
+    line = f"[DM]: {text}"
+    try:
+        existing = ""
+        if os.path.exists(QUEUE_FILE):
+            existing = open(QUEUE_FILE).read().rstrip("\n")
+        with open(QUEUE_FILE, "w") as f:
+            f.write(f"{existing}\n{line}" if existing else line)
+    except Exception:
+        return "Error", 500
+
+    _broadcast({"dm_input": {"text": text, "timestamp": _time.time()}},
+               audience="dm")
+    return "", 204
+
+
 @app.route("/device/approve", methods=["POST"])
 def device_approve():
     """DM approves a pending device. Body: {"id": "<device_id>"}"""

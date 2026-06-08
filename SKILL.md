@@ -359,6 +359,8 @@ _reply to send it, change it, or drop it_"
 
 **Autorun integration.** Autorun works normally in assistant mode. `[DM]:` lines in the AUTORUN output are the DM lane (handle per above); `[CharName]:` lines remain player actions. A mixed batch = resolve player mechanics, then address the DM's input. Player staged input still respects the ready-gate; DM input arrives immediately.
 
+> **Immediate-fire requires a live consumer.** The DM bar always *delivers* (writes `[DM]:` to `.input_queue`), but that queue only triggers a turn when something is consuming it: the **autorun loop** (`autorun-wait.sh`, polls every 0.3s) or `check_input.py` at a turn boundary. With `autorun: false` and no active turn loop, DM input sits in the queue with no response — exactly like staged player input waiting for the next Enter. For continuous assistant-mode play where the DM drives via the bar, **run with `autorun: true`.**
+
 ---
 
 ## XP Awards

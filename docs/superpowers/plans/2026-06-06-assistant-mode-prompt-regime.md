@@ -46,7 +46,7 @@ The master spec gated 7b on watching a live session. That gate was **not satisfi
 - **Body:** `{"text": "..."}`, sanitized with `_sanitize_input`.
 - **Queue:** appends to the existing input queue tagged `[DM]: …` so `check_input.py` / `autorun-wait.sh` deliver it through the pipe that already drives Claude's turns. No new transport.
 - **Echo:** broadcasts `{"dm_input": …}` with `audience="dm"` only — DM sees their message land on the GM screen; players see nothing.
-- **Trigger semantics:** DM input fires Claude's turn **immediately**, bypassing the players' ready-gate (the DM drives pacing). Staged-but-unready player inputs stay staged — a DM whisper exchange cannot sweep in a player's half-typed action. Player ready-up flow is unchanged.
+- **Trigger semantics:** DM input fires Claude's turn **immediately *when a consumer is live*** — i.e. the autorun loop (`autorun-wait.sh`, polling `.input_queue` every 0.3s) or `check_input.py` at a turn boundary. With `autorun: false` and no active turn loop, `/dm-input` still *delivers* (the bar shows ✓) but the line waits in the queue with no response, exactly like staged player input. "Immediate" is therefore **autorun-scoped**; continuous bar-driven assistant play requires `autorun: true`. *(Validated live 2026-06-07: with autorun off, a DM-bar send queued silently; flipping autorun on made the loop fire on its own.)* Either way, staged-but-unready player inputs stay staged — a DM whisper exchange cannot sweep in a player's half-typed action. Player ready-up flow is unchanged.
 
 **Frontend:** one text box on the GM screen, rendered only for the `dm` identity. An input field, not an approval subsystem.
 
@@ -87,6 +87,7 @@ Reveals are **DM-gated by default** (consistent with story-lane rules). A per-ch
 2. **Player↔player PMs** — channel-layer feature, orthogonal to this regime. Variant to evaluate then: DM-cc'd "pass a note" semantics.
 3. **Approach B: button-approval queue** — server-side proposal store + approve/edit/reject UI on the GM screen. **Trigger:** observed approve-fatigue in real sessions. The SKILL.md regime is identical under A and B; B layers on without rework.
 4. **v2 `dice_request` DC leak (HIGH)** — on v2, secret DCs currently broadcast to every browser, which directly breaks §7 step 1. The leak fix is a **prerequisite for this regime on v2**, not a parallel chore. Fix spec lives at the `TODO(channel-layer, HIGH)` in the v2 app; do it with dice-flow tests.
+5. **No-consumer feedback (UX, surfaced 2026-06-07)** — the DM bar reports "✓ delivered" whenever `/dm-input` writes to the queue, even when nothing will consume it (autorun off, no live turn loop). The DM reasonably reads "delivered" as "Claude will respond," then sees nothing. Options to evaluate: have the bar warn when no consumer is live (e.g. `/dm-input` returns a soft 202 + "queued — no active turn loop" when `autorun` is false and no recent consume), or surface autorun state on the GM screen. Low-severity; the fix is feedback, not plumbing.
 
 ## 9. Testing
 

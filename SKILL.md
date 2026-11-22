@@ -206,7 +206,7 @@ AUTORUN=$(bash ~/.claude/skills/dnd/display/autorun-wait.sh)
 echo "$AUTORUN"
 ```
 
-- If `AUTORUN` is non-empty: treat it as the player action for the next turn. Process immediately — no DM message needed. The content has already been sanitised by dnd-display-app.py before being written to the queue.
+- If `AUTORUN` is non-empty: treat it as the player action for the next turn. Process immediately — no DM message needed. The content has already been sanitised by dnd-display-app.py before being written to the queue. If any line is tagged `[DM]:` and a human DM is assigned, that line is the DM lane, not a player action — see `## Assistant Mode (human DM assigned)`.
 - If `AUTORUN` is empty (timeout after 9 min): **silently restart the wait** — do not print anything, do not wait for a DM message. Just run the same Bash block again immediately. This keeps the loop alive indefinitely until a player submits or the DM intervenes.
 - If the DM sends a message mid-wait: the Bash is interrupted. **Before processing the DM's message, run `check_input.py` once.** If it returns content, that is queued player input that arrived during the gap — treat it as part of this turn alongside the DM's message (or as the primary action if the DM message is administrative). If it returns empty, proceed with the DM's message as the turn input. After resolving the DM's turn, restart the wait if `autorun: true` is still in state.md.
 
@@ -329,6 +329,37 @@ g. push_stats.py --turn-current  ← advance turn pointer (still separate — no
 Step (f) is the most commonly missed. Every narration block must be sent.
 Step (g) uses `push_stats.py --turn-current` directly because it has no narration to bundle with.
 `tracker.py effect tick` is the headless fallback — it fires regardless of whether the display is running.
+
+---
+
+## Assistant Mode (human DM assigned)
+
+Check `state.md → ## Session Flags` for a `dm:` line on every `/dnd load` and at each turn boundary. If present, a human DM holds creative authority and **you are the assistant, not the DM**. If absent (or after `/dnd dm clear`), run as autonomous DM exactly as before — everything in this section applies ONLY while `dm:` is set.
+
+**The one rule:** *if it's deterministic, commit it; if it's words, draft it.*
+
+| Lane | Examples | Where it goes |
+|------|----------|---------------|
+| **Mechanics** (deterministic) | dice results, HP/slot/condition deltas, stat updates, initiative math | Commit directly: `send.py` / `push_stats.py` to the shared display, as normal |
+| **Story** (words) | narration, scene text, NPC dialogue, check reveals, options | Numbered draft to the GM screen ONLY: `send.py --audience dm`. NEVER to the shared display without DM approval |
+
+**Draft protocol.** Number drafts sequentially per session (#1, #2, …). Every draft ends with the affordance hint so the DM never has to remember syntax:
+
+```bash
+python3 ~/.claude/skills/dnd/display/send.py --audience dm \
+  "**#3 · reveal → Vesper** — *Fresh scratch marks ring the lock — someone forced this door, recently and badly.*
+_reply to send it, change it, or drop it_"
+```
+
+**DM input is authoritative.** Lines tagged `[DM]:` in the input queue (from autorun-wait.sh or check_input.py) are the human DM speaking privately to you. Their narrative statements are canon — update state and respond (with drafts/mechanics) accordingly, on the dm channel. Treat approval language conversationally: "send 3", "the scratch marks one", "3 but creepier", "drop it", "send 3 to everyone" all work. **If you are not sure which draft or what action the DM meant, ask on the dm channel — never guess-and-commit.** On approval, send the (possibly edited) text via `send.py` to the draft's target audience. Drafts are conversational state: when the scene has clearly moved on, retire or re-offer stale drafts rather than blindly sending them.
+
+**Skill checks.** The DC stays on the dm channel — players never see it. Roll outcomes may commit publicly as ✓/✗ per character (bare numbers only if the DM says so). Write the reveal *per passer* as separate drafts (different passers can get different slices). On approval, whisper each with `send.py --audience <character>`.
+
+**Take the wheel.** If the DM says to take over ("take the wheel", "run this room, then hand back"), run as autonomous DM — story lane commits directly to the shared display — until the DM says they're back or the named boundary arrives. The `dm:` flag does not change; this is a posture, not a mode switch.
+
+**Autorun integration.** Autorun works normally in assistant mode. `[DM]:` lines in the AUTORUN output are the DM lane (handle per above); `[CharName]:` lines remain player actions. A mixed batch = resolve player mechanics, then address the DM's input. Player staged input still respects the ready-gate; DM input arrives immediately.
+
+> **Immediate-fire requires a live consumer.** The DM bar always *delivers* (writes `[DM]:` to `.input_queue`), but that queue only triggers a turn when something is consuming it: the **autorun loop** (`autorun-wait.sh`, polls every 0.3s) or `check_input.py` at a turn boundary. With `autorun: false` and no active turn loop, DM input sits in the queue with no response — exactly like staged player input waiting for the next Enter. For continuous assistant-mode play where the DM drives via the bar, **run with `autorun: true`.**
 
 ---
 

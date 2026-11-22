@@ -361,7 +361,7 @@ def _build_stats_payload(args) -> "dict | None":
     return {"players": list(players.values())}
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Send text to the DnD display server.")
     parser.add_argument(
         "--player", metavar="NAME",
@@ -429,12 +429,22 @@ def main() -> None:
     parser.add_argument("--effect-end", action="append", metavar="NAME:SPELL",
         help="End a timed effect: NAME:SPELL (narrative end — broken, dispelled, player drops)")
 
+    # ── Audience routing (private channels) ───────────────────────────────────
+    parser.add_argument("--audience", metavar="all|dm|<name>", default=None,
+        help="Route this send: 'all' (default broadcast), 'dm' (private DM "
+             "channel / GM screen), or a character/user name to whisper. Only "
+             "filters when a DM is assigned; otherwise everyone sees it.")
+
     # ── Diagnostics ───────────────────────────────────────────────────────────
     parser.add_argument("--verify", action="store_true",
         help="After sending, GET /health and confirm the broadcast was received. "
              "Surfaces a clear stderr line on mismatch — use during dev/debug.")
 
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv=None) -> None:
+    args = _build_parser().parse_args(argv)
 
     # Two categories of flags drive whether to read stdin:
     #   1. Content flags (--player/--npc/--dice/--tutor/--action): body REQUIRED.
@@ -464,6 +474,8 @@ def main() -> None:
         body: dict = {"inspiration_award": name, "text": name}
         if args.inspiration_reason:
             body["reason"] = args.inspiration_reason.strip()
+        if args.audience:
+            body["audience"] = args.audience
         _post(FLASK_URL, json.dumps(body).encode(), token)
         _post(STATS_URL, json.dumps({"players": [{"name": name, "inspiration": True}]}).encode(), token)
 
@@ -481,6 +493,8 @@ def main() -> None:
         m_body: dict = {"milestone_award": name, "text": name, "label": label}
         if args.milestone_reason:
             m_body["reason"] = args.milestone_reason.strip()
+        if args.audience:
+            m_body["audience"] = args.audience
         _post(FLASK_URL, json.dumps(m_body).encode(), token)
         _post(STATS_URL, json.dumps({
             "players": [{"name": name, "_milestone_inc": label}]
@@ -490,6 +504,8 @@ def main() -> None:
         name = args.milestone_spend.strip()
         label = (args.milestone_label or "Milestone").strip()
         ms_body: dict = {"milestone_spend": name, "text": name, "label": label}
+        if args.audience:
+            ms_body["audience"] = args.audience
         _post(FLASK_URL, json.dumps(ms_body).encode(), token)
         _post(STATS_URL, json.dumps({
             "players": [{"name": name, "_milestone_dec": label}]
@@ -508,7 +524,10 @@ def main() -> None:
             amt   = xp_data.get("xp", 0)
             rsn   = xp_data.get("reason", "")
             xp_data["summary"] = f"{names} — {amt} XP" + (f" ({rsn})" if rsn else "")
-        _post(FLASK_URL, json.dumps({"xp_award": xp_data, "text": xp_data["summary"]}).encode(), token)
+        xp_body: dict = {"xp_award": xp_data, "text": xp_data["summary"]}
+        if args.audience:
+            xp_body["audience"] = args.audience
+        _post(FLASK_URL, json.dumps(xp_body).encode(), token)
 
     # ── Pre-flight integrity check ────────────────────────────────────────────
     # If a content flag is set but no text arrived on stdin, that's almost
@@ -543,6 +562,8 @@ def main() -> None:
                 payload["dice"] = True
             elif args.tutor:
                 payload["tutor"] = True
+            if args.audience:
+                payload["audience"] = args.audience
 
             issues = _validate_payload(payload, "chunk")
             if issues:
